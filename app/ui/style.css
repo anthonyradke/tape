@@ -167,8 +167,76 @@ input[type="range"] { flex: 1; min-width: 0; accent-color: var(--ink-2); height:
 .report-btns { display: flex; gap: 6px; }
 pre { flex: 1; min-height: 120px; margin: 0; padding: 12px; overflow: auto; font: 12px/1.55 Consolas, ui-monospace, monospace; color: var(--ink-2); white-space: pre-wrap; user-select: text; }
 
+/* tabs */
+.tabs { display: flex; border-right: 1px solid var(--rule); }
+.tab { padding: 0 16px; color: var(--ink-3); font-size: 13px; font-weight: 600; font-variation-settings: var(--semi); box-shadow: inset 0 -2px 0 transparent; transition: color .12s; }
+.tab:hover { color: var(--ink); }
+.tab.on { color: var(--ink); box-shadow: inset 0 -2px 0 var(--ink); }
+body[data-tab="capture"] .gallery.page, body[data-tab="gallery"] .shell { display: none; }
+
+/* gallery */
+.gallery { min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+.gallery.page { flex: 1; padding: 14px 20px 0; background: var(--ground); }
+.gallery-bar { flex: none; display: flex; align-items: center; gap: 12px; padding-bottom: 12px; }
+.gallery-bar .cap { flex: 1; }
+.game-pick { flex: 0 1 240px; }
+.gallery-bar .seg { flex: 0 0 auto; }
+.gallery-bar .seg button { padding: 0 12px; }
+.grid {
+  flex: 1; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 14px 12px; align-content: start; padding-bottom: 16px; scrollbar-width: thin; scrollbar-color: var(--rule-3) transparent;
+}
+.grid .empty { grid-column: 1 / -1; }
+.card { display: block; min-width: 0; text-align: left; }
+.thumb { position: relative; display: block; aspect-ratio: 16 / 9; overflow: hidden; border-radius: 3px; background: var(--raise-2); box-shadow: inset 0 0 0 1px var(--rule-2); }
+.thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.card:hover .thumb { box-shadow: 0 0 0 1.5px var(--ink); }
+.length, .kind { position: absolute; bottom: 5px; padding: 0 5px; border-radius: 2px; background: rgba(0, 0, 0, .72); color: #fff; font-size: 11px; font-weight: 500; line-height: 17px; }
+.length { right: 5px; }
+.kind { left: 5px; }
+.card .title { display: block; margin-top: 6px; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card .meta { display: block; color: var(--ink-3); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* player */
+.player { position: fixed; inset: 40px 0 0; z-index: 5; display: flex; flex-direction: column; background: #000; }
+.player[hidden] { display: none; }
+.player-bar { flex: none; display: flex; align-items: center; gap: 6px; padding: 8px 12px; background: var(--chrome); border-bottom: 1px solid var(--rule); }
+.player-info { flex: 1; min-width: 0; }
+.player-title { font-weight: 600; font-size: 13.5px; }
+.player-meta { color: var(--ink-3); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.player video { flex: 1; min-height: 0; width: 100%; background: #000; }
+.player video[hidden] { display: none; }
+.player-note { margin: auto; max-width: 440px; padding: 16px; color: var(--ink-2); text-align: center; line-height: 1.5; }
+
+/* overlay: nothing behind the panel but the game */
+.overlay-page, html:has(.overlay-page) { background: transparent; }
+.overlay-page { position: relative; align-items: center; justify-content: center; padding: 24px; }
+.ov-dim { position: fixed; inset: 0; background: rgba(0, 0, 0, .5); }
+.ov-panel {
+  position: relative; width: min(1180px, 100%); height: min(740px, 100%); display: flex; flex-direction: column; overflow: hidden;
+  border: 1px solid var(--rule-3); border-radius: 4px; background: var(--ground); box-shadow: 0 18px 60px rgba(0, 0, 0, .55);
+}
+.ov-head { height: 44px; flex: none; display: flex; align-items: stretch; background: var(--chrome); border-bottom: 1px solid var(--rule); }
+.ov-head > .btn { align-self: center; margin-right: 6px; }
+.ov-game { align-self: center; padding-left: 14px; border-left: 1px solid var(--rule-2); color: var(--ink); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ov-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 340px minmax(0, 1fr); }
+.ov-side { min-height: 0; overflow-y: auto; padding: 14px; border-right: 1px solid var(--rule); background: var(--chrome); scrollbar-width: thin; scrollbar-color: var(--rule-3) transparent; }
+.ov-side .btn.big { padding: 0 8px; font-size: 13px; }
+.ov-side .btn.big kbd { display: none; }
+.ov-side .group { padding: 12px 0 8px; }
+.ov-side .group:last-child { padding-bottom: 0; }
+.ov-side .row { grid-template-columns: 96px minmax(0, 1fr); gap: 10px; min-height: 34px; }
+.ov-side .num { min-width: 56px; }
+.ov-side .note { margin-left: 106px; }
+.ov-body .gallery { padding: 12px 16px 0; }
+.overlay-page .player { inset: 0; }
+@media (max-width: 760px) {
+  .ov-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .ov-side { border-right: 0; border-bottom: 1px solid var(--rule); max-height: 56vh; }
+}
+
 .toast {
-  position: fixed; left: 50%; bottom: 18px; transform: translate(-50%, 8px); max-width: 70%; padding: 8px 14px; border-radius: 3px;
+  z-index: 6; position: fixed; left: 50%; bottom: 18px; transform: translate(-50%, 8px); max-width: 70%; padding: 8px 14px; border-radius: 3px;
   background: var(--ink); color: var(--ground); font-size: 13px; font-weight: 500; opacity: 0; pointer-events: none; transition: opacity .15s, transform .15s;
 }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }

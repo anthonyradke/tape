@@ -4,6 +4,7 @@
 
 pub mod audio;
 pub mod cursor;
+pub mod game;
 pub mod ipc;
 pub mod mp4;
 pub mod naming;

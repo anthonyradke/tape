@@ -1,6 +1,9 @@
 //! What the window and the tray can do.
 
-use std::path::Path;
+use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant, UNIX_EPOCH};
@@ -15,19 +18,32 @@ use tauri_plugin_dialog::DialogExt;
 use crate::cue::{self, Cue};
 use crate::hotkeys;
 use crate::state::{self, Health, Shared};
-use crate::{supervisor, tray};
+use crate::{overlay, supervisor, tray};
 
 const RECENT: usize = 40;
+/// Set by CI to run app/ui/uitest.js in a real WebView2. See the workflow.
+const UI_TEST: &str = "TAPE_UI_TEST";
 /// It normally takes about 20 seconds.
 const SELF_TEST_LIMIT: Duration = Duration::from_secs(90);
 
-#[derive(Serialize)]
+/// Label for files directly in the clips folder, from before they were sorted by game.
+const UNSORTED: &str = "Other";
+const MAX_THUMBNAIL: usize = 2 << 20;
+
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClipFile {
     path: String,
     name: String,
+    game: String,
+    /// "clip" for instant replay, "recording" otherwise.
+    kind: &'static str,
     bytes: u64,
     modified: u64,
+    /// Names its thumbnail, which changes if the file does.
+    key: String,
+    thumb: Option<String>,
+    seconds: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -46,27 +62,102 @@ pub struct View {
     version: &'static str,
     log_path: String,
     self_test: Option<String>,
+    ui_test: bool,
 }
 
-fn recent_clips(folder: &Path) -> Vec<ClipFile> {
-    let Ok(entries) = std::fs::read_dir(folder) else { return Vec::new() };
-    let mut clips: Vec<ClipFile> = entries
+fn is_mp4(path: &Path) -> bool {
+    path.extension().is_some_and(|x| x.eq_ignore_ascii_case("mp4"))
+}
+
+fn thumbnail_key(path: &Path, bytes: u64, modified: u64) -> String {
+    let mut hasher = DefaultHasher::new();
+    (path, bytes, modified).hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+/// Thumbnails by key. Each file is called <key>_<duration in ms>.jpg, so finding them also gives
+/// every clip's length without opening it.
+fn thumbnails(dir: &Path) -> HashMap<String, (PathBuf, f64)> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return HashMap::new() };
+    entries
         .flatten()
-        .filter(|e| e.path().extension().is_some_and(|x| x.eq_ignore_ascii_case("mp4")))
-        .filter_map(|e| {
-            let meta = e.metadata().ok()?;
-            let modified = meta.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_millis() as u64;
-            Some(ClipFile {
-                path: e.path().display().to_string(),
-                name: e.file_name().to_string_lossy().into_owned(),
-                bytes: meta.len(),
-                modified,
-            })
+        .filter_map(|entry| {
+            let path = entry.path();
+            let stem = path.file_stem()?.to_str()?;
+            let (key, millis) = stem.split_once('_')?;
+            Some((key.to_string(), (path.clone(), millis.parse::<f64>().ok()? / 1000.0)))
         })
-        .collect();
+        .collect()
+}
+
+fn add_clips(dir: &Path, game: &str, known: &HashMap<String, (PathBuf, f64)>, clips: &mut Vec<ClipFile>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(meta) = entry.metadata() else { continue };
+        let modified = meta.modified().ok().and_then(|m| m.duration_since(UNIX_EPOCH).ok());
+        let (true, Some(modified)) = (is_mp4(&path), modified) else { continue };
+        let modified = modified.as_millis() as u64;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let key = thumbnail_key(&path, meta.len(), modified);
+        let thumb = known.get(&key);
+        clips.push(ClipFile {
+            kind: if name.to_lowercase().ends_with(".dvr.mp4") { "clip" } else { "recording" },
+            thumb: thumb.map(|(p, _)| p.display().to_string()),
+            seconds: thumb.map(|(_, s)| *s),
+            path: path.display().to_string(),
+            game: game.to_string(),
+            bytes: meta.len(),
+            modified,
+            name,
+            key,
+        });
+    }
+}
+
+/// Everything saved, newest first: the clips folder and one level of game folders. Skips the
+/// recording in progress, which isn't a finished video yet.
+fn all_clips(shared: &Shared) -> Vec<ClipFile> {
+    let folder = shared.folder();
+    let known = thumbnails(&shared.thumbnails);
+    let mut clips = Vec::new();
+    add_clips(&folder, UNSORTED, &known, &mut clips);
+    for entry in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
+        if entry.path().is_dir() {
+            add_clips(&entry.path(), &entry.file_name().to_string_lossy(), &known, &mut clips);
+        }
+    }
+    let writing = shared.status.lock().unwrap().recording_path.clone();
+    clips.retain(|c| Some(&c.path) != writing.as_ref());
     clips.sort_by_key(|c| std::cmp::Reverse(c.modified));
-    clips.truncate(RECENT);
     clips
+}
+
+/// Lets the player and thumbnails read these, and nothing else on disk.
+pub fn allow_media(app: &AppHandle) {
+    let shared = app.state::<Shared>();
+    let scope = app.asset_protocol_scope();
+    for dir in [shared.folder(), shared.thumbnails.clone()] {
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = scope.allow_directory(&dir, true);
+    }
+}
+
+#[tauri::command]
+pub fn clips(app: AppHandle) -> Vec<ClipFile> {
+    all_clips(&app.state::<Shared>())
+}
+
+/// `key` comes from the webview, so it has to look like one before it goes in a path.
+#[tauri::command]
+pub fn save_thumb(app: AppHandle, key: String, seconds: f64, jpeg: Vec<u8>) -> Option<String> {
+    if key.is_empty() || !key.chars().all(|c| c.is_ascii_hexdigit()) || jpeg.len() > MAX_THUMBNAIL {
+        return None;
+    }
+    let shared = app.state::<Shared>();
+    let path = shared.thumbnails.join(format!("{key}_{}.jpg", (seconds * 1000.0) as u64));
+    std::fs::write(&path, jpeg).ok()?;
+    Some(path.display().to_string())
 }
 
 /// The NVIDIA overlay holds the same default keys, and its replay costs what tape is here to save.
@@ -105,19 +196,22 @@ pub fn view(app: AppHandle) -> View {
     let shared = app.state::<Shared>();
     let settings = shared.settings.lock().unwrap().clone();
     let folder = shared.folder();
+    let mut clips = all_clips(&shared);
+    clips.truncate(RECENT);
     let view = View {
         replay_ram: settings.replay_ram_bytes(),
         status: shared.status.lock().unwrap().clone(),
         probe: shared.probe.lock().unwrap().clone(),
         health: shared.health.lock().unwrap().clone(),
         hotkey_errors: shared.hotkey_errors.lock().unwrap().clone(),
-        clips: recent_clips(&folder),
+        clips,
         folder: folder.display().to_string(),
         autostart: app.autolaunch().is_enabled().unwrap_or(false),
         overlay_running: overlay_running(),
         version: env!("CARGO_PKG_VERSION"),
         log_path: shared.log_path.display().to_string(),
         self_test: shared.self_test.lock().unwrap().clone(),
+        ui_test: std::env::var_os(UI_TEST).is_some(),
         settings,
     };
     view
@@ -128,12 +222,17 @@ pub fn save_settings(app: AppHandle, settings: Settings) -> View {
     let shared = app.state::<Shared>();
     let settings = settings.normalized();
     let keys_changed = shared.settings.lock().unwrap().hotkeys != settings.hotkeys;
+    let folder_changed = shared.settings.lock().unwrap().folder != settings.folder;
     *shared.settings.lock().unwrap() = settings.clone();
     shared.persist();
     state::send(&app, &Command::Configure { settings: Box::new(settings) });
     if keys_changed {
         hotkeys::register(&app);
     }
+    if folder_changed {
+        allow_media(&app);
+    }
+    let _ = app.emit("changed", ());
     tray::refresh(&app);
     view(app)
 }
@@ -206,9 +305,13 @@ pub fn open_folder(app: AppHandle) {
     reveal_folder(&app);
 }
 
-/// Only files in the clips folder: this takes a path from the webview.
+/// Only videos in the clips folder or a game folder directly under it: this takes a path from the
+/// webview. Comparing exact parents leaves no way to climb out with "..".
 fn inside_folder(app: &AppHandle, path: &str) -> bool {
-    Path::new(path).parent() == Some(app.state::<Shared>().folder().as_path())
+    let folder = app.state::<Shared>().folder();
+    let path = Path::new(path);
+    let parent = path.parent();
+    is_mp4(path) && (parent == Some(folder.as_path()) || parent.and_then(Path::parent) == Some(folder.as_path()))
 }
 
 #[tauri::command]
@@ -231,6 +334,37 @@ pub fn reveal_file(app: AppHandle, path: String) {
     }
     #[cfg(not(windows))]
     open_path(Path::new(&path).parent().unwrap_or(Path::new(".")));
+}
+
+#[tauri::command]
+pub fn hide_overlay(app: AppHandle) {
+    overlay::hide(&app);
+}
+
+/// Async because making a window from a synchronous command deadlocks on Windows.
+#[tauri::command]
+pub async fn open_main(app: AppHandle) {
+    overlay::hide(&app);
+    crate::show_window(&app);
+}
+
+/// Opens or closes the overlay as the hotkey would, and says what happened. Async for the same
+/// reason as `open_main`.
+#[tauri::command]
+pub async fn ui_test_overlay(app: AppHandle) -> Option<(bool, bool)> {
+    std::env::var_os(UI_TEST)?;
+    overlay::toggle(&app);
+    std::thread::sleep(Duration::from_millis(1500));
+    Some(overlay::state(&app))
+}
+
+/// Ends a run started with the UI test variable set, which holds where to write the results.
+#[tauri::command]
+pub fn ui_test_done(app: AppHandle, report: String) {
+    let Some(path) = std::env::var_os(UI_TEST) else { return };
+    let _ = std::fs::write(path, report);
+    supervisor::shutdown(&app);
+    app.exit(0);
 }
 
 #[tauri::command]

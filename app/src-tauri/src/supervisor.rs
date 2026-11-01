@@ -284,6 +284,14 @@ fn handle(app: &AppHandle, event: Event, alarm: &mut Alarm) {
             if sounds {
                 cue::play(if kind == SavedKind::Clip { Cue::ClipSaved } else { Cue::RecordingStopped });
             }
+            // The gallery reloads on this, and the status that says it's finished is up to half a
+            // second away. Until then the file would count as still being written.
+            {
+                let mut status = shared.status.lock().unwrap();
+                if status.recording_path.as_ref() == Some(&path) {
+                    status.recording_path = None;
+                }
+            }
             let _ = app.emit("saved", path);
             let _ = app.emit("changed", ());
         }

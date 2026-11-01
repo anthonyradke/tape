@@ -5,7 +5,7 @@ tape replaces the capture features of the NVIDIA app with one small program. It 
 minutes of the screen and audio in memory, saves them as a clip on a hotkey, and records on demand.
 It was written after the NVIDIA app's instant replay kept switching itself off.
 
-Status: private, not yet run on NVIDIA hardware. See [Testing](#testing).
+Status: private, in daily testing on one RTX 4070 Ti. See [Testing](#testing).
 
 ## Features
 
@@ -14,7 +14,11 @@ Status: private, not yet run on NVIDIA hardware. See [Testing](#testing).
 - H.264, HEVC or AV1, chosen from what the GPU reports, at the monitor's resolution or scaled down,
   with bitrate, frame rate and quality settings that apply as soon as they change.
 - Game audio from any output device and a microphone from any input device, mixed or on separate tracks.
-- Global hotkeys, defaulting to the ones ShadowPlay uses (Alt+F10, Alt+F9, Alt+Shift+F10).
+- Global hotkeys, defaulting to the ones ShadowPlay uses (Alt+F10, Alt+F9, Alt+Shift+F10, Alt+Z).
+- An overlay over the game with replay, recording, common settings and recent clips.
+- A gallery with thumbnails and a built-in player, filtered by game.
+- Clips sorted into a folder per game under `Videos\Tape`, using NVIDIA's file names
+  (`Fortnite 2026.10.08 - 22.14.44.26.DVR.mp4`, without `.DVR` for recordings).
 - Tones for a saved clip or a failure, since a fullscreen game covers everything else.
 
 ## Requirements
@@ -51,6 +55,15 @@ or power cut costs at most the last two seconds. Finishing appends a normal `moo
 headers in place, with no copying. Clips are written with `moov` first so they start immediately when
 shared.
 
+The overlay is an ordinary always-on-top window excluded from capture, not a hook into the game, so
+anti-cheat has nothing to object to and it can't appear in a clip. Games in borderless or Windows'
+default fullscreen show it directly. A game in true exclusive fullscreen drops to the desktop while it's
+open, as with Alt+Tab. Its webview is created on first use and released after five minutes hidden.
+
+Game names come from Steam's manifests and from install folders of other stores, with a short table for
+games those don't cover. Anything else counts as a game if it fills a monitor without a title bar, and
+takes its name from the window title. Everything else goes in `Desktop`.
+
 ## Testing
 
 | What | How |
@@ -59,6 +72,7 @@ shared.
 | Engine behavior: clips, recording, restarts, hangs, device loss | `cargo test -p tape-engine`, real process on a fake backend |
 | D3D11, both capture APIs, pointer shaders, AAC (output decoded by ffmpeg) | `tape --self-test report.txt` on a Windows CI runner |
 | NVENC, video processor, WASAPI | The same self-test on a machine with an NVIDIA GPU and sound hardware, from Settings > Run self-test |
+| Clips play, seek and make thumbnails in WebView2, overlay opens and is excluded from capture | The real app on the fake engine on a Windows CI runner, driven by `app/ui/uitest.js` |
 
 `tape --self-test <file> [settings.json]` runs each stage of the pipeline and writes a plain text report,
 including a check that captured frames aren't black. Settings > Run self-test starts the same command in its own

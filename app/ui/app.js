@@ -2,88 +2,14 @@
 // it changes, so there is no Save button.
 "use strict";
 
-const { invoke } = window.__TAURI__.core;
-const { listen } = window.__TAURI__.event;
-const $ = (id) => document.getElementById(id);
-
-const FPS = [30, 60, 120, 144, 165, 240];
-const HEIGHTS = [2160, 1440, 1080, 720];
-const LENGTHS = [[30, "30 seconds"], [60, "1 minute"], [120, "2 minutes"], [300, "5 minutes"], [600, "10 minutes"], [900, "15 minutes"], [1200, "20 minutes"]];
-const CODECS = [["h264", "H.264", "plays everywhere"], ["hevc", "HEVC", "smaller files, less widely playable"], ["av1", "AV1", "smallest files, newest GPUs only"]];
-const PRESETS = [["fast", "Fast"], ["balanced", "Balanced"], ["quality", "Quality"]];
-const METHODS = [["auto", "Automatic"], ["duplication", "Desktop Duplication"], ["graphics", "Windows Graphics Capture"]];
-const KEYS = [["saveClip", "Save clip"], ["toggleRecording", "Record"], ["toggleReplay", "Instant replay"]];
-
-let view = null;
 let listening = null;
-let toastTimer = 0;
-
-function esc(s) {
-  return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-}
-
-function clock(seconds) {
-  const s = Math.floor(seconds);
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const pad = (n) => String(n).padStart(2, "0");
-  return h ? `${h}:${pad(m)}:${pad(s % 60)}` : `${m}:${pad(s % 60)}`;
-}
-
-function bytes(n) {
-  if (n >= 1e9) return `${(n / 1e9).toFixed(1)} GB`;
-  if (n >= 1e6) return `${Math.round(n / 1e6)} MB`;
-  return `${Math.round(n / 1e3)} KB`;
-}
-
-function when(ms) {
-  const d = new Date(ms);
-  const today = new Date().toDateString() === d.toDateString();
-  const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-  return today ? `Today, ${time}` : `${d.toLocaleDateString([], { month: "short", day: "numeric" })}, ${time}`;
-}
-
-function toast(text, bad) {
-  const t = $("toast");
-  t.textContent = text;
-  t.className = bad ? "toast show bad" : "toast show";
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (t.className = "toast"), bad ? 6000 : 2500);
-}
-
-// ---------- settings form ----------
-
-const select = (key, options, value, disabled) =>
-  `<select data-key="${key}" ${disabled ? "disabled" : ""}>${options
-    .map(([v, label, off]) => `<option value="${esc(v)}" ${String(v) === String(value) ? "selected" : ""} ${off ? "disabled" : ""}>${esc(label)}</option>`)
-    .join("")}</select>`;
-
-const seg = (key, options, value, disabled) =>
-  `<div class="seg">${options
-    .map(([v, label]) => `<button data-seg="${key}" data-value="${v}" class="${v === value ? "on" : ""}" ${disabled ? "disabled" : ""}>${label}</button>`)
-    .join("")}</div>`;
-
-const toggle = (key, on, label) =>
-  `<button class="toggle ${on ? "on" : ""}" data-toggle="${key}" role="switch" aria-checked="${!!on}" aria-label="${esc(label)}"></button>`;
-
-const row = (label, control) => `<div class="row"><div class="label">${label}</div><div class="control">${control}</div></div>`;
-
-function deviceOptions(devices, value, offLabel) {
-  const options = [["default", "Windows default"], ...devices.map((d) => [d.id, d.name]), ["", offLabel]];
-  // Keep a saved device on the list while it's unplugged, so opening this doesn't change it.
-  if (value && value !== "default" && !devices.some((d) => d.id === value)) options.splice(1, 0, [value, "Saved device (not connected)"]);
-  return options;
-}
 
 function renderSettings() {
   const s = view.settings;
   const p = view.probe;
   const recording = view.status.recording;
   const monitors = p.monitors.map((m) => [m.primary ? "" : m.id, `${m.name}, ${m.width}×${m.height} ${m.hz ? m.hz + " Hz" : ""}${m.primary ? " (primary)" : ""}`]);
-  const current = p.monitors.find((m) => m.id === s.monitor) || p.monitors.find((m) => m.primary) || p.monitors[0];
-  const native = current ? `Monitor, ${current.width}×${current.height}` : "Monitor";
-  const heights = [[0, native], ...HEIGHTS.filter((h) => !current || h < current.height).map((h) => [h, `${h}p`])];
-  if (s.resolution && !heights.some(([h]) => h === s.resolution)) heights.push([s.resolution, `${s.resolution}p`]);
+  const heights = heightOptions();
   const codecs = CODECS.map(([v, label]) => [v, label, p.codecs.length > 0 && !p.codecs.includes(v)]);
   const codecNote = (CODECS.find(([v]) => v === s.codec) || [])[2];
   const taken = view.hotkeyErrors;
@@ -149,7 +75,7 @@ function renderClips() {
     return;
   }
   list.innerHTML = view.clips
-    .map((c) => `<button class="clip" data-open="${esc(c.path)}" title="Open. Right-click to show in folder."><span class="name">${esc(c.name.replace(/\.mp4$/i, ""))}</span><span class="size">${bytes(c.bytes)}</span><span class="when">${when(c.modified)}</span></button>`)
+    .map((c) => `<button class="clip" data-open="${esc(c.path)}" title="Play. Right-click to show in folder."><span class="name">${esc(c.game)}${c.kind === "recording" ? " recording" : ""}</span><span class="size">${bytes(c.bytes)}</span><span class="when">${when(c.modified)}</span></button>`)
     .join("");
 }
 
@@ -158,7 +84,7 @@ function renderAlerts() {
   const h = view.health;
   if (h.problem) out.push(`<div class="alert"><b>${esc(h.problem)}</b>${h.light === "trouble" ? " tape keeps retrying on its own." : ""}</div>`);
   if (view.probe.nvencError) out.push(`<div class="alert"><b>Can't use the GPU encoder.</b> ${esc(view.probe.nvencError)}</div>`);
-  if (view.overlayRunning) out.push(`<div class="alert"><b>The NVIDIA overlay is running.</b> Turn it off in the NVIDIA app so it stops recording in the background and lets go of the same hotkeys.</div>`);
+  if (view.overlayRunning) out.push(`<div class="alert"><b>The NVIDIA overlay is running.</b> Turn it off in the NVIDIA app so it stops recording in the background and lets go of the same hotkeys, Alt+Z included.</div>`);
   if (h.engineRestarts > 0) out.push(`<div class="alert">Recovered ${h.engineRestarts === 1 ? "once" : `${h.engineRestarts} times`} since starting. Last: ${esc(h.lastRestart || "unknown")}.</div>`);
   $("alerts").innerHTML = out.join("");
 }
@@ -169,7 +95,7 @@ function renderKeys() {
   $("k-rec").textContent = k.toggleRecording;
 }
 
-function renderAll() {
+function render() {
   if (document.activeElement?.matches?.("input[type=range]")) return; // don't move a slider in use
   renderSettings();
   renderClips();
@@ -224,54 +150,30 @@ function renderStatus(s) {
   level("l-mic", s.mic);
 }
 
-async function refresh() {
-  view = await invoke("view");
-  renderAll();
-}
+// ---------- tabs ----------
 
-async function save(change) {
-  const settings = structuredClone(view.settings);
-  change(settings);
-  view.settings = settings; // shown right away, confirmed by the reply
-  view = await invoke("save_settings", { settings });
-  renderAll();
+function showTab(name) {
+  document.body.dataset.tab = name;
+  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("on", t.dataset.tabName === name));
+  if (name === "gallery") return Gallery.load();
 }
 
 // ---------- input ----------
 
-document.addEventListener("change", (e) => {
-  const key = e.target.dataset.key;
-  if (!key) return;
-  const numeric = typeof view.settings[key] === "number";
-  const value = numeric ? Number(e.target.value) : e.target.value;
-  save((s) => (s[key] = value));
-});
-
-document.addEventListener("input", (e) => {
-  const key = e.target.dataset.range;
-  if (!key) return;
-  const unit = key === "bitrateMbps" ? " Mbps" : "%";
-  $(`n-${key}`).textContent = e.target.value + unit;
-});
-
-// Applied on release: a bitrate change restarts the encoder, so not on every step of a drag.
-document.addEventListener("change", (e) => {
-  const key = e.target.dataset.range;
-  if (!key) return;
-  e.target.blur();
-  save((s) => (s[key] = Number(e.target.value)));
-});
-
 document.addEventListener("click", async (e) => {
-  const target = e.target.closest("[data-act],[data-seg],[data-toggle],[data-hotkey],[data-open]");
+  const target = e.target.closest("[data-act],[data-seg],[data-toggle],[data-hotkey],[data-open],[data-tab-name]");
   if (!target) return;
-  const { act, seg: segKey, toggle: toggleKey, hotkey, open } = target.dataset;
-  if (open) return invoke("open_file", { path: open });
+  const { act, seg: segKey, toggle: toggleKey, hotkey, open, tabName } = target.dataset;
+  if (tabName) return showTab(tabName);
+  if (open) {
+    await showTab("gallery");
+    return Gallery.play(open);
+  }
   if (segKey) return save((s) => (s[segKey] = target.dataset.value));
   if (hotkey) return listenForKey(target, hotkey);
   if (toggleKey === "autostart") {
     view.autostart = await invoke("set_autostart", { enabled: !view.autostart });
-    return renderAll();
+    return render();
   }
   if (toggleKey) return save((s) => (s[toggleKey] = !s[toggleKey]));
   const w = window.__TAURI__.window.getCurrentWindow();
@@ -300,9 +202,9 @@ document.addEventListener("click", async (e) => {
 });
 
 document.addEventListener("contextmenu", (e) => {
-  const item = e.target.closest("[data-open]");
+  const item = e.target.closest("[data-open],[data-play]");
   e.preventDefault();
-  if (item) invoke("reveal_file", { path: item.dataset.open });
+  if (item) invoke("reveal_file", { path: item.dataset.open || item.dataset.play });
 });
 
 // ---------- rebinding keys ----------
@@ -356,6 +258,7 @@ listen("changed", () => !listening && refresh());
 listen("saved", (e) => {
   toast(`Saved ${e.payload.split(/[\\/]/).pop()}`);
   refresh();
+  if (document.body.dataset.tab === "gallery") Gallery.load();
 });
 listen("error", (e) => toast(e.payload, true));
 listen("selftest", (e) => {
@@ -363,4 +266,10 @@ listen("selftest", (e) => {
   $("report").hidden = false;
 });
 
-refresh();
+Gallery.mount($("gallery"));
+refresh().then(() => {
+  if (!view.uiTest) return;
+  const test = document.createElement("script");
+  test.src = "uitest.js";
+  document.body.append(test);
+});

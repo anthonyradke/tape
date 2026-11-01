@@ -7,9 +7,10 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use tape_core::game::Tracker;
 use tape_core::ipc::{AudioSource, Command, Event, SavedKind, Status, VideoStatus};
 use tape_core::mp4::write_clip;
-use tape_core::naming;
+use tape_core::naming::{self, ClipKind};
 use tape_core::record::Finished;
 use tape_core::settings::{Settings, NO_DEVICE};
 use tape_core::sink::Sink;
@@ -24,6 +25,8 @@ const STATUS_EVERY: Duration = Duration::from_millis(500);
 const HANG_LIMIT_MS: u64 = 8000;
 /// Audio that is still in flight when the save key is pressed.
 const CLIP_SETTLE: Duration = Duration::from_millis(250);
+/// A recording belongs to the game that was in front this recently.
+const RECENT_GAME: Duration = Duration::from_secs(15);
 
 const BACKOFF: [Duration; 5] = [
     Duration::from_millis(250),
@@ -114,6 +117,7 @@ struct Engine {
     audio_shared: Arc<AudioShared>,
     restarts: Arc<AtomicU32>,
     configured: bool,
+    games: Tracker,
     last_bytes: u64,
     last_frames: u64,
     last_sample: Instant,
@@ -134,10 +138,15 @@ impl Engine {
         }
     }
 
-    fn output_path(&self) -> PathBuf {
-        let title = self.backend.foreground_title();
-        let name = naming::file_name(title.as_deref(), chrono::Local::now());
-        naming::unique(&self.folder().join(name))
+    fn track_game(&mut self) {
+        self.games.update(self.backend.foreground(), Instant::now());
+    }
+
+    /// `game_age`: how long ago a game can have been in front and still be the one this is of.
+    fn output_path(&mut self, kind: ClipKind, game_age: Duration) -> PathBuf {
+        self.track_game();
+        let game = self.games.game(game_age, Instant::now());
+        naming::output_path(&self.folder(), &game, kind, chrono::Local::now())
     }
 
     fn start_pipeline(&mut self) {
@@ -265,13 +274,14 @@ impl Engine {
         self.reconcile();
     }
 
-    fn save_clip(&self) {
+    fn save_clip(&mut self) {
         if !self.settings.replay {
             let _ = self.events.send(Event::Error { message: "Instant replay is off".into(), clip: true });
             return;
         }
         let (sink, events, seconds) = (self.sink.clone(), self.events.clone(), self.settings.replay_seconds);
-        let path = self.output_path();
+        // Anything played in the last `seconds` is in the clip.
+        let path = self.output_path(ClipKind::Replay, Duration::from_secs(seconds as u64));
         thread::spawn(move || {
             thread::sleep(CLIP_SETTLE);
             let event = match sink.clip(seconds) {
@@ -293,7 +303,8 @@ impl Engine {
 
     fn start_recording(&mut self) {
         if !self.sink.is_recording() {
-            self.sink.start_recording(self.output_path());
+            let path = self.output_path(ClipKind::Recording, RECENT_GAME);
+            self.sink.start_recording(path);
             self.reconcile();
         }
     }
@@ -336,6 +347,7 @@ impl Engine {
     }
 
     fn status(&mut self) -> Status {
+        self.track_game();
         let elapsed = self.last_sample.elapsed().as_secs_f32();
         if elapsed >= 1.0 {
             let frames = self.sink.frames();
@@ -379,6 +391,7 @@ impl Engine {
             recording_bytes: rec.bytes,
             recording_path: rec.path.map(|p| p.display().to_string()),
             restarts: self.restarts.load(Ordering::Relaxed),
+            game: self.games.game(RECENT_GAME, Instant::now()),
         }
     }
 }
@@ -448,6 +461,7 @@ pub fn run(backend: Arc<dyn Backend>, input: impl BufRead + Send + 'static, mut 
         }),
         restarts: Arc::default(),
         configured: false,
+        games: Tracker::default(),
         settings,
         last_bytes: 0,
         last_frames: 0,

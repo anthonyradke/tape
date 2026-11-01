@@ -132,7 +132,9 @@ impl Engine {
     }
 
     fn mp4s(&self) -> Vec<PathBuf> {
-        let mut files: Vec<_> = fs::read_dir(&self.folder).unwrap().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "mp4")).collect();
+        // Files sit in a folder per game.
+        let games = fs::read_dir(&self.folder).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.is_dir());
+        let mut files: Vec<_> = games.flat_map(|dir| fs::read_dir(dir).unwrap().flatten().map(|e| e.path())).filter(|p| p.extension().is_some_and(|x| x == "mp4")).collect();
         files.sort();
         files
     }
@@ -179,7 +181,9 @@ fn replay_clip_has_the_requested_length_and_is_named_for_the_game() {
     assert_eq!(event["evt"], "saved", "{event}");
     assert_eq!(event["kind"], "clip");
     let path = saved(&event);
-    assert!(path.file_name().unwrap().to_str().unwrap().starts_with("Test Game 20"));
+    let name = path.file_name().unwrap().to_str().unwrap();
+    assert!(name.starts_with("Test Game 20") && name.ends_with(".DVR.mp4"), "{name}");
+    assert_eq!(path.parent().unwrap().file_name().unwrap(), "Test Game");
     let info = probe(&path);
     let d = seconds(&info);
     assert!((5.0..=6.5).contains(&d), "clip is {d} s");

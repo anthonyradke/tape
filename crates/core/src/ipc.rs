@@ -58,6 +58,8 @@ pub struct Status {
     pub recording_path: Option<String>,
     /// Times the video pipeline has been restarted since the engine started.
     pub restarts: u32,
+    /// Where a clip saved now would go.
+    pub game: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

@@ -3,6 +3,7 @@
 mod commands;
 mod cue;
 mod hotkeys;
+mod overlay;
 mod state;
 mod supervisor;
 mod tray;
@@ -63,6 +64,7 @@ fn main() {
             let handle = app.handle();
             let (shared, first_run) = state::Shared::load(handle);
             app.manage(shared);
+            commands::allow_media(handle);
             if first_run {
                 // Replay is only useful if it's already running when something happens.
                 let _ = app.autolaunch().enable();
@@ -87,6 +89,12 @@ fn main() {
             commands::open_log,
             commands::pick_folder,
             commands::self_test,
+            commands::clips,
+            commands::save_thumb,
+            commands::hide_overlay,
+            commands::open_main,
+            commands::ui_test_overlay,
+            commands::ui_test_done,
             commands::set_autostart,
             commands::pause_hotkeys,
             commands::resume_hotkeys,

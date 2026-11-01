@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use tape_core::game::Foreground;
 use tape_core::ipc::{AudioSource, Probe};
 use tape_core::settings::Settings;
 use tape_core::sink::Sink;
@@ -116,7 +117,7 @@ pub trait Backend: Send + Sync + 'static {
     fn aac_encoder(&self) -> Result<Box<dyn AacEncoder>, String>;
     /// Called on each audio thread before it opens anything.
     fn audio_thread_setup(&self) {}
-    fn foreground_title(&self) -> Option<String>;
+    fn foreground(&self) -> Option<Foreground>;
     fn default_folder(&self) -> std::path::PathBuf;
     fn self_test(&self, settings: &Settings) -> String;
 }

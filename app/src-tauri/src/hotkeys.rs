@@ -7,7 +7,7 @@ use tauri::plugin::TauriPlugin;
 use tauri::{AppHandle, Manager, Wry};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
-use crate::commands;
+use crate::{commands, overlay};
 use crate::state::Shared;
 
 #[derive(Clone, Copy)]
@@ -15,6 +15,7 @@ enum Action {
     SaveClip,
     ToggleRecording,
     ToggleReplay,
+    Overlay,
 }
 
 static BINDINGS: Mutex<Vec<(u32, Action)>> = Mutex::new(Vec::new());
@@ -30,6 +31,7 @@ pub fn plugin() -> TauriPlugin<Wry> {
                 Some(Action::SaveClip) => commands::do_save_clip(app),
                 Some(Action::ToggleRecording) => commands::do_toggle_recording(app),
                 Some(Action::ToggleReplay) => commands::do_toggle_replay(app),
+                Some(Action::Overlay) => overlay::toggle(app),
                 None => {}
             }
         })
@@ -49,6 +51,7 @@ pub fn register(app: &AppHandle) {
         (&keys.save_clip, Action::SaveClip),
         (&keys.toggle_recording, Action::ToggleRecording),
         (&keys.toggle_replay, Action::ToggleReplay),
+        (&keys.overlay, Action::Overlay),
     ];
     for (text, action) in wanted {
         if text.is_empty() {

@@ -46,6 +46,8 @@ pub struct Shared {
     pub self_test: Mutex<Option<String>>,
     pub log_path: PathBuf,
     pub settings_path: PathBuf,
+    /// Gallery thumbnails, a cache that's safe to delete.
+    pub thumbnails: PathBuf,
 }
 
 impl Shared {
@@ -58,6 +60,10 @@ impl Shared {
         let text = fs::read_to_string(&settings_path).ok();
         let first_run = text.is_none();
         let settings: Settings = text.and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        if settings.folder.is_empty() {
+            tape_core::naming::rename_old_default_folder();
+        }
+        let thumbnails = app.path().app_cache_dir().unwrap_or_else(|_| dir.clone()).join("thumbnails");
         let log_path = app.path().app_log_dir().unwrap_or(dir).join("engine.log");
         let shared = Shared {
             settings: Mutex::new(settings.normalized()),
@@ -72,6 +78,7 @@ impl Shared {
             self_test: Mutex::new(None),
             log_path,
             settings_path,
+            thumbnails,
         };
         shared.persist();
         (shared, first_run)

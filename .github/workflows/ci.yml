@@ -1,7 +1,8 @@
 # Tests the platform-free code on Linux against real decoders, then builds on Windows and runs the
 # self-test there. That covers D3D11, both capture APIs, the pointer shaders and the AAC encoder.
 # Hosted runners have a software GPU and no sound hardware, so NVENC, the video processor and
-# WASAPI only run on a real machine.
+# WASAPI only run on a real machine. The UI test then runs the real app in a real WebView2 on the
+# fake engine, to show that clips play, seek and make thumbnails, and that the overlay opens.
 name: ci
 
 on:
@@ -20,9 +21,15 @@ jobs:
         run: sudo apt-get update -q && sudo apt-get install -yq ffmpeg
       - name: Test
         run: cargo test -p tape-core -p tape-engine -p nvenc
+      - name: Keep the fake engine's video and audio for the UI test
+        uses: actions/upload-artifact@v4
+        with:
+          name: fixtures
+          path: /tmp/tape-e2e-*/*.frames
 
   windows:
     runs-on: windows-latest
+    needs: test
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -45,6 +52,51 @@ jobs:
           if (Select-String -Path $report -Pattern "FAILED" -Quiet) { "::warning::the self-test reported failures" }
           if (-not (Test-Path $report)) { exit 1 }
 
+      - name: Get the fake engine's video and audio
+        uses: actions/download-artifact@v4
+        with:
+          name: fixtures
+          path: ${{ runner.temp }}/fixtures
+
+      - name: UI test
+        shell: pwsh
+        run: |
+          $home_ = "$env:RUNNER_TEMP\ui"
+          $folder = "$home_\Tape"
+          $config = "$env:APPDATA\com.anthonyradke.tape"
+          New-Item -ItemType Directory -Force $config, $folder | Out-Null
+          @{ folder = $folder } | ConvertTo-Json | Set-Content "$config\settings.json"
+          $frames = Get-ChildItem "$env:RUNNER_TEMP\fixtures" -Recurse -Filter video.frames | Select-Object -First 1
+          $env:TAPE_FAKE = "1"
+          $env:TAPE_FAKE_VIDEO = $frames.FullName
+          $env:TAPE_FAKE_AUDIO = Join-Path $frames.DirectoryName "audio.frames"
+          $env:TAPE_FAKE_FOLDER = $folder
+          $env:TAPE_FAKE_GOP = "30"
+          $report = "$env:RUNNER_TEMP\ui-test.json"
+          $env:TAPE_UI_TEST = $report
+          $app = Start-Process -FilePath target\release\tape.exe -PassThru
+          if (-not $app.WaitForExit(180000)) { $app.Kill(); "::error::the UI test never finished"; exit 1 }
+          Get-Content $report
+          $r = Get-Content $report -Raw | ConvertFrom-Json
+          $bad = @()
+          if ($r.failure) { $bad += $r.failure }
+          if ($r.count -ne 2) { $bad += "expected 2 clips, got $($r.count)" }
+          foreach ($c in $r.clips) {
+            if ($c.game -ne "Test Game") { $bad += "$($c.name): filed under $($c.game)" }
+            if (-not $c.thumb) { $bad += "$($c.name): no thumbnail, $($c.thumbError)" }
+            if ($c.playError) { $bad += "$($c.name): won't play, $($c.playError)" }
+            if ($c.playedTo -le 0.3) { $bad += "$($c.name): didn't advance, reached $($c.playedTo)" }
+            if ($c.audioBytes -le 0) { $bad += "$($c.name): no audio decoded" }
+            if ($c.seekedTo -le 0) { $bad += "$($c.name): didn't seek" }
+          }
+          if ($r.clips.name -notmatch "^Test Game \d{4}\.\d\d\.\d\d - \d\d\.\d\d\.\d\d\.\d\d\.DVR\.mp4$") { $bad += "clip name" }
+          if ($r.thumbsListed -ne 2) { $bad += "thumbnails listed: $($r.thumbsListed)" }
+          if (-not $r.overlayOpen[0]) { $bad += "the overlay didn't open" }
+          if (-not $r.overlayOpen[1]) { $bad += "the overlay isn't excluded from capture" }
+          if ($r.overlayClosed[0]) { $bad += "the overlay didn't close" }
+          $bad | ForEach-Object { "::error::$_" }
+          if ($bad) { exit 1 }
+
       - name: Keep the report
         if: always()
         uses: actions/upload-artifact@v4
@@ -53,3 +105,4 @@ jobs:
           path: |
             ${{ runner.temp }}/self-test.txt
             ${{ runner.temp }}/tape-selftest.aac
+            ${{ runner.temp }}/ui-test.json

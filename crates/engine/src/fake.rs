@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use tape_core::game::Foreground;
 use tape_core::ipc::{AudioDevice, Monitor, Probe};
 use tape_core::mp4::codec::parse_frame;
 use tape_core::packet::{from_micros, Codec, VideoFormat, AAC_FRAME, AUDIO_RATE};
@@ -186,8 +187,8 @@ impl Backend for Fake {
         Ok(Box::new(Canned { frames: self.audio.clone(), next: 0 }))
     }
 
-    fn foreground_title(&self) -> Option<String> {
-        Some("Test Game".into())
+    fn foreground(&self) -> Option<Foreground> {
+        Some(Foreground { title: "Test Game".into(), exe: r"C:\games\test.exe".into(), fullscreen: true })
     }
 
     fn default_folder(&self) -> PathBuf {

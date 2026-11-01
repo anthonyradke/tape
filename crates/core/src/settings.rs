@@ -25,12 +25,18 @@ pub struct Hotkeys {
     pub save_clip: String,
     pub toggle_recording: String,
     pub toggle_replay: String,
+    pub overlay: String,
 }
 
 impl Default for Hotkeys {
     /// The same keys ShadowPlay uses, so muscle memory carries over.
     fn default() -> Self {
-        Hotkeys { save_clip: "Alt+F10".into(), toggle_recording: "Alt+F9".into(), toggle_replay: "Alt+Shift+F10".into() }
+        Hotkeys {
+            save_clip: "Alt+F10".into(),
+            toggle_recording: "Alt+F9".into(),
+            toggle_replay: "Alt+Shift+F10".into(),
+            overlay: "Alt+Z".into(),
+        }
     }
 }
 
@@ -40,7 +46,7 @@ pub const NO_DEVICE: &str = "";
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
-    /// Empty means Videos\tape.
+    /// Empty means Videos\Tape. Clips go in a folder per game under it.
     pub folder: String,
     /// Output device name, empty for the primary monitor.
     pub monitor: String,
@@ -164,6 +170,12 @@ mod tests {
         assert_eq!(s.fps, 144);
         assert_eq!(s.bitrate_mbps, 50);
         assert_eq!(s.hotkeys.save_clip, "Alt+F10");
+    }
+
+    #[test]
+    fn settings_saved_before_the_overlay_existed_get_its_key() {
+        let s: Settings = serde_json::from_str(r#"{"hotkeys": {"saveClip": "F8"}}"#).unwrap();
+        assert_eq!((s.hotkeys.save_clip.as_str(), s.hotkeys.overlay.as_str()), ("F8", "Alt+Z"));
     }
 
     #[test]

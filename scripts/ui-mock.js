@@ -6,7 +6,7 @@
     folder: "", monitor: "", resolution: 0, fps: 60, codec: "h264", bitrateMbps: 50, preset: "balanced", capture: "auto",
     showCursor: true, replay: scene !== "off", replaySeconds: 120, systemAudio: "default", microphone: scene === "replay" ? "" : "mic-1",
     systemVolume: 100, micVolume: 100, separateTracks: false,
-    hotkeys: { saveClip: "Alt+F10", toggleRecording: "Alt+F9", toggleReplay: "Alt+Shift+F10" }, sounds: true,
+    hotkeys: { saveClip: "Alt+F10", toggleRecording: "Alt+F9", toggleReplay: "Alt+Shift+F10", overlay: "Alt+Z" }, sounds: true,
   };
   const recording = scene === "recording";
   const trouble = scene === "trouble";
@@ -15,10 +15,16 @@
     system: { name: "Headphones (Arctis Nova 5)", running: true, peak: 0.42, problem: null },
     mic: settings.microphone ? { name: "Headset Microphone", running: true, peak: 0.18, problem: null } : null,
     replayOn: settings.replay, replaySeconds: 87.4, replayTarget: 120, replayBytes: 480e6,
-    recording, recordingSeconds: recording ? 754 : 0, recordingBytes: recording ? 3.9e9 : 0, recordingPath: null, restarts: 0,
+    recording, recordingSeconds: recording ? 754 : 0, recordingBytes: recording ? 3.9e9 : 0, recordingPath: null, restarts: 0, game: "Counter-Strike 2",
   };
   const now = Date.now();
-  const clip = (name, ago, size) => ({ path: `C:\\Users\\me\\Videos\\tape\\${name}.mp4`, name: `${name}.mp4`, bytes: size, modified: now - ago * 60000 });
+  // Clips use sample.mp4 from next to this file when there is one. See ui-preview.sh.
+  const pad = (n) => String(n).padStart(2, "0");
+  const clip = (game, ago, size, kind = "clip") => {
+    const d = new Date(now - ago * 60000);
+    const name = `${game} ${d.getFullYear()}.${pad(d.getMonth() + 1)}.${pad(d.getDate())} - ${pad(d.getHours())}.${pad(d.getMinutes())}.${pad(d.getSeconds())}.11${kind === "clip" ? ".DVR" : ""}.mp4`;
+    return { path: `sample.mp4?${game}${ago}`, name, game, kind, bytes: size, modified: d.getTime(), key: `${game}${ago}`.replace(/[^a-f0-9]/gi, "a"), thumb: null, seconds: null };
+  };
   let view = {
     settings, status,
     probe: {
@@ -36,20 +42,23 @@
       engineRestarts: trouble ? 2 : 0, lastRestart: trouble ? "engine stopped responding" : null,
     },
     hotkeyErrors: scene === "conflict" ? ["Alt+F10"] : [],
-    folder: "C:\\Users\\me\\Videos\\tape",
+    folder: "C:\\Users\\me\\Videos\\Tape",
     clips: q.get("empty") ? [] : [
-      clip("Valheim 2026-10-31 21-14-03", 12, 790e6), clip("Valheim 2026-10-31 20-58-41", 28, 760e6),
-      clip("Minecraft 2026-10-30 22-10-17", 1400, 4.1e9), clip("2026-10-30 19-02-55", 1600, 712e6),
-      clip("Counter-Strike 2 2026-10-29 23-41-09", 2800, 803e6), clip("Counter-Strike 2 2026-10-29 23-12-30", 2830, 788e6),
+      clip("Counter-Strike 2", 12, 790e6), clip("Counter-Strike 2", 28, 760e6), clip("Fortnite", 95, 1.1e9),
+      clip("Minecraft", 1400, 4.1e9, "recording"), clip("Desktop", 1600, 712e6), clip("Lethal Company", 2800, 803e6),
+      clip("Lethal Company", 2830, 788e6), clip("Grand Theft Auto V", 4300, 790e6), clip("Fortnite", 5800, 760e6),
     ],
-    autostart: true, overlayRunning: scene === "conflict", replayRam: 1.13e9, version: "0.1.0", logPath: "", selfTest: null,
+    autostart: true, overlayRunning: scene === "conflict", replayRam: 1.13e9, version: "0.2.0", logPath: "", selfTest: null, uiTest: false,
   };
   const listeners = {};
   const emit = (name, payload) => (listeners[name] || []).forEach((f) => f({ payload }));
-  window.__mock = { emit };
+  const calls = [];
+  window.__mock = { emit, calls };
   window.__TAURI__ = {
     core: {
+      convertFileSrc: (path) => path,
       invoke: async (cmd, args) => {
+        calls.push(cmd);
         if (cmd === "view") return structuredClone(view);
         if (cmd === "save_settings") {
           view.settings = args.settings;
@@ -57,7 +66,14 @@
           return structuredClone(view);
         }
         if (cmd === "set_autostart") return args.enabled;
-        if (cmd === "save_clip") return emit("saved", "C:\\Users\\me\\Videos\\tape\\Valheim 2026-10-31 21-30-00.mp4");
+        if (cmd === "clips") return structuredClone(view.clips);
+        if (cmd === "save_thumb") {
+          const jpeg = new Blob([new Uint8Array(args.jpeg)], { type: "image/jpeg" });
+          const thumb = URL.createObjectURL(jpeg);
+          Object.assign(view.clips.find((c) => c.key === args.key), { thumb, seconds: args.seconds });
+          return thumb;
+        }
+        if (cmd === "save_clip") return emit("saved", "C:\\Users\\me\\Videos\\Tape\\Counter-Strike 2\\Counter-Strike 2 2026.11.01 - 21.30.00.11.DVR.mp4");
         if (cmd === "self_test") return setTimeout(() => emit("selftest", "tape 0.1.0 self-test\nWindows 10.0.26100\n\nCapture\n  Desktop Duplication: OK"), 300);
       },
     },

@@ -5,9 +5,13 @@
   <title>tape</title>
   <link rel="stylesheet" href="style.css" />
 </head>
-<body>
+<body data-tab="capture">
   <header class="titlebar" data-tauri-drag-region>
     <div class="wordmark" data-tauri-drag-region>tape</div>
+    <div class="tabs" role="tablist">
+      <button class="tab on" data-tab-name="capture" role="tab">Capture</button>
+      <button class="tab" data-tab-name="gallery" role="tab">Gallery</button>
+    </div>
     <div class="tb-state" id="tb-state" data-tauri-drag-region></div>
     <div class="tb-spacer" data-tauri-drag-region></div>
     <div class="win-controls">
@@ -20,7 +24,7 @@
     </div>
   </header>
 
-  <main class="shell">
+  <main class="shell" id="shell">
     <section class="now" aria-label="Status">
       <div class="plate" style="--cols: 2">
         <div class="cell"><div class="cap">Instant replay</div><div class="val" id="p-replay"></div><div class="meter"><i id="p-replay-fill"></i></div></div>
@@ -45,6 +49,7 @@
 
     <section class="settings" id="settings" aria-label="Settings"></section>
   </main>
+  <section class="gallery page" id="gallery" aria-label="Gallery"></section>
 
   <div id="report" class="report" hidden>
     <div class="report-box" role="dialog" aria-label="Self-test report">
@@ -59,6 +64,7 @@
     </div>
   </div>
   <div id="toast" class="toast" role="status"></div>
+  <script src="shared.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

@@ -1,6 +1,7 @@
 # Tests the platform-free code on Linux against real decoders, then builds on Windows and runs the
-# self-test there. Hosted runners have no NVIDIA GPU, so that exercises everything except NVENC:
-# D3D11, both capture APIs, the video processor, the shader compiler, WASAPI and the AAC encoder.
+# self-test there. That covers D3D11, both capture APIs, the pointer shaders and the AAC encoder.
+# Hosted runners have a software GPU and no sound hardware, so NVENC, the video processor and
+# WASAPI only run on a real machine.
 name: ci
 
 on:
@@ -32,30 +33,6 @@ jobs:
 
       - name: Build
         run: cargo build --release -p tape
-
-      # Hosted runners have no sound hardware. Scream is a virtual sound card, which gives WASAPI
-      # a real endpoint to capture from.
-      - name: Install a virtual sound card
-        continue-on-error: true
-        # An untrusted driver raises a dialog nobody can answer here, so this has to be able to give up.
-        timeout-minutes: 3
-        shell: pwsh
-        run: |
-          Start-Service audio*
-          Invoke-WebRequest https://github.com/duncanthrax/scream/releases/download/4.0/Scream4.0.zip -OutFile Scream.zip
-          Expand-Archive Scream.zip -DestinationPath Scream
-          $inf = Get-ChildItem Scream -Recurse -Filter Scream.inf | Where-Object { $_.FullName -match 'x64' } | Select-Object -First 1
-          $sys = Get-ChildItem Scream -Recurse -Filter Scream.sys | Where-Object { $_.FullName -match 'x64' } | Select-Object -First 1
-          $devcon = Get-ChildItem Scream -Recurse -Filter 'devcon*x64*.exe' | Select-Object -First 1
-          $cert = (Get-AuthenticodeSignature $sys.FullName).SignerCertificate
-          foreach ($name in "Root", "TrustedPublisher") {
-            $store = [System.Security.Cryptography.X509Certificates.X509Store]::new($name, "LocalMachine")
-            $store.Open("ReadWrite"); $store.Add($cert); $store.Close()
-          }
-          Push-Location $inf.DirectoryName
-          & $devcon.FullName install Scream.inf "*Scream"
-          Pop-Location
-          Start-Sleep -Seconds 5
 
       - name: Self-test
         shell: pwsh

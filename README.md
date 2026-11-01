@@ -57,8 +57,8 @@ shared.
 |---|---|
 | MP4 output for all three codecs, crash recovery, audio sync | `cargo test -p tape-core`, decoded by ffmpeg |
 | Engine behavior: clips, recording, restarts, hangs, device loss | `cargo test -p tape-engine`, real process on a fake backend |
-| D3D11, capture, WASAPI, AAC | `tape --self-test report.txt` on a Windows CI runner |
-| NVENC | The same self-test on a machine with an NVIDIA GPU, from Settings > Run self-test |
+| D3D11, both capture APIs, pointer shaders, AAC (output decoded by ffmpeg) | `tape --self-test report.txt` on a Windows CI runner |
+| NVENC, video processor, WASAPI | The same self-test on a machine with an NVIDIA GPU and sound hardware, from Settings > Run self-test |
 
 `tape --self-test <file>` runs each stage of the pipeline and writes a plain text report, including a
 check that captured frames aren't black.

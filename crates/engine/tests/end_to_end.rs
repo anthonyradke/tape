@@ -1,0 +1,382 @@
+//! Runs the real engine process on the fake backend, talks to it over the real protocol, and has
+//! ffprobe read what it writes. Covers what a user would notice: clips, recordings, keeping
+//! going through failures. Skips if ffmpeg isn't installed.
+
+use std::fs;
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::mpsc::{channel, Receiver};
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
+
+use serde_json::{json, Value};
+use tape_core::mp4::codec::nal_units;
+
+const GOP: usize = 60;
+
+fn have_ffmpeg() -> bool {
+    Command::new("ffmpeg").arg("-version").output().is_ok()
+}
+
+fn ffmpeg(args: &[&str]) {
+    let out = Command::new("ffmpeg").args(["-v", "error", "-y"]).args(args).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+}
+
+/// Streams shared by every test, built once.
+fn fixtures() -> &'static (PathBuf, PathBuf) {
+    static FIXTURES: OnceLock<(PathBuf, PathBuf)> = OnceLock::new();
+    FIXTURES.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("tape-e2e-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let (h264, aac) = (dir.join("v.h264"), dir.join("a.aac"));
+        ffmpeg(&["-f", "lavfi", "-i", "testsrc2=size=640x360:rate=60", "-frames:v", "600", "-pix_fmt", "yuv420p", "-g", "60", "-keyint_min", "60", "-sc_threshold", "0", "-bf", "0", "-c:v", "libx264", "-preset", "ultrafast", "-bsf:v", "h264_metadata=aud=insert", "-f", "h264", h264.to_str().unwrap()]);
+        ffmpeg(&["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "4", "-ac", "2", "-c:a", "aac", "-f", "adts", aac.to_str().unwrap()]);
+
+        let mut video = Vec::new();
+        let data = fs::read(&h264).unwrap();
+        let mut frames: Vec<Vec<u8>> = Vec::new();
+        for nal in nal_units(&data) {
+            if nal[0] & 0x1f == 9 || frames.is_empty() {
+                frames.push(Vec::new());
+            }
+            let f = frames.last_mut().unwrap();
+            f.extend_from_slice(&[0, 0, 0, 1]);
+            f.extend_from_slice(nal);
+        }
+        for f in frames {
+            video.extend_from_slice(&(f.len() as u32).to_le_bytes());
+            video.extend_from_slice(&f);
+        }
+        let video_path = dir.join("video.frames");
+        fs::write(&video_path, video).unwrap();
+
+        let data = fs::read(&aac).unwrap();
+        let mut audio = Vec::new();
+        let mut i = 0;
+        while i + 7 <= data.len() {
+            let len = ((data[i + 3] as usize & 3) << 11) | ((data[i + 4] as usize) << 3) | (data[i + 5] as usize >> 5);
+            audio.extend_from_slice(&((len - 7) as u32).to_le_bytes());
+            audio.extend_from_slice(&data[i + 7..i + len]);
+            i += len;
+        }
+        let audio_path = dir.join("audio.frames");
+        fs::write(&audio_path, audio).unwrap();
+        (video_path, audio_path)
+    })
+}
+
+struct Engine {
+    child: Child,
+    stdin: Option<ChildStdin>,
+    events: Receiver<Value>,
+    folder: PathBuf,
+}
+
+impl Engine {
+    fn start(name: &str, env: &[(&str, &str)]) -> Engine {
+        let (video, audio) = fixtures();
+        let folder = std::env::temp_dir().join(format!("tape-e2e-out-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&folder);
+        fs::create_dir_all(&folder).unwrap();
+        let mut child = Command::new(env!("CARGO_BIN_EXE_tape-engine-fake"))
+            .env("TAPE_FAKE", "1")
+            .env("TAPE_FAKE_VIDEO", video)
+            .env("TAPE_FAKE_AUDIO", audio)
+            .env("TAPE_FAKE_GOP", GOP.to_string())
+            .env("TAPE_FAKE_FOLDER", &folder)
+            .envs(env.iter().copied())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let (tx, events) = channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if tx.send(serde_json::from_str::<Value>(&line).unwrap()).is_err() {
+                    break;
+                }
+            }
+        });
+        Engine { child, stdin: Some(stdin), events, folder }
+    }
+
+    fn send(&mut self, command: Value) {
+        let stdin = self.stdin.as_mut().unwrap();
+        writeln!(stdin, "{command}").unwrap();
+        stdin.flush().unwrap();
+    }
+
+    fn configure(&mut self, settings: Value) {
+        self.send(json!({"cmd": "configure", "settings": settings}));
+    }
+
+    /// The next event `accept` likes, within `seconds`.
+    fn wait(&self, seconds: u64, what: &str, accept: impl Fn(&Value) -> bool) -> Value {
+        let until = Instant::now() + Duration::from_secs(seconds);
+        while let Some(left) = until.checked_duration_since(Instant::now()) {
+            match self.events.recv_timeout(left) {
+                Ok(event) if accept(&event) => return event,
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+        panic!("timed out waiting for {what}");
+    }
+
+    fn wait_status(&self, seconds: u64, what: &str, accept: impl Fn(&Value) -> bool) -> Value {
+        self.wait(seconds, what, |e| e["evt"] == "status" && accept(&e["status"]))["status"].clone()
+    }
+
+    fn mp4s(&self) -> Vec<PathBuf> {
+        let mut files: Vec<_> = fs::read_dir(&self.folder).unwrap().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "mp4")).collect();
+        files.sort();
+        files
+    }
+}
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn probe(path: &Path) -> Value {
+    let out = Command::new("ffprobe").args(["-v", "error", "-count_packets", "-show_streams", "-show_format", "-of", "json"]).arg(path).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    serde_json::from_slice(&out.stdout).unwrap()
+}
+
+fn seconds(info: &Value) -> f64 {
+    info["format"]["duration"].as_str().unwrap().parse().unwrap()
+}
+
+fn decode_clean(path: &Path) {
+    let out = Command::new("ffmpeg").args(["-v", "error", "-xerror", "-i"]).arg(path).args(["-map", "0", "-f", "null", "-"]).output().unwrap();
+    assert!(out.status.success() && out.stderr.is_empty(), "{}", String::from_utf8_lossy(&out.stderr));
+}
+
+fn saved(event: &Value) -> PathBuf {
+    PathBuf::from(event["path"].as_str().unwrap())
+}
+
+#[test]
+fn replay_clip_has_the_requested_length_and_is_named_for_the_game() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut e = Engine::start("clip", &[]);
+    e.configure(json!({"replaySeconds": 5, "microphone": ""}));
+    let s = e.wait_status(15, "6 s buffered", |s| s["replaySeconds"].as_f64().unwrap() >= 5.0);
+    assert_eq!(s["video"]["running"], true);
+    assert_eq!(s["replayOn"], true);
+    e.send(json!({"cmd": "saveClip"}));
+    let event = e.wait(10, "clip", |ev| ev["evt"] == "saved" || ev["evt"] == "error");
+    assert_eq!(event["evt"], "saved", "{event}");
+    assert_eq!(event["kind"], "clip");
+    let path = saved(&event);
+    assert!(path.file_name().unwrap().to_str().unwrap().starts_with("Test Game 20"));
+    let info = probe(&path);
+    let d = seconds(&info);
+    assert!((5.0..=6.5).contains(&d), "clip is {d} s");
+    assert_eq!(info["streams"].as_array().unwrap().len(), 2);
+    decode_clean(&path);
+}
+
+#[test]
+fn recording_works_with_replay_off_and_is_a_normal_mp4() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut e = Engine::start("record", &[]);
+    e.configure(json!({"replay": false}));
+    let s = e.wait_status(5, "idle", |_| true);
+    assert_eq!(s["video"]["running"], false, "nothing should run with replay off");
+    e.send(json!({"cmd": "startRecording"}));
+    let s = e.wait_status(10, "3 s recorded", |s| s["recordingSeconds"].as_f64().unwrap() >= 3.0);
+    assert_eq!(s["recording"], true);
+    e.send(json!({"cmd": "stopRecording"}));
+    let event = e.wait(10, "recording saved", |ev| ev["evt"] == "saved");
+    assert_eq!(event["kind"], "recording");
+    let info = probe(&saved(&event));
+    assert!(seconds(&info) >= 3.0);
+    decode_clean(&saved(&event));
+    e.wait_status(5, "pipeline stopped", |s| s["video"]["running"] == false && s["recording"] == false);
+}
+
+#[test]
+fn encoder_failure_recovers_without_losing_the_recording_or_the_buffer() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut e = Engine::start("recover", &[("TAPE_FAKE_FAIL_AFTER", "120"), ("TAPE_FAKE_FAILURES", "2")]);
+    e.configure(json!({"replaySeconds": 30}));
+    e.wait_status(5, "running", |s| s["video"]["running"] == true);
+    e.send(json!({"cmd": "startRecording"}));
+    let s = e.wait_status(25, "two restarts and time after", |s| s["restarts"].as_u64().unwrap() >= 2 && s["recordingSeconds"].as_f64().unwrap() >= 7.0);
+    assert_eq!(s["video"]["running"], true);
+    assert_eq!(s["restarts"], 2);
+    e.send(json!({"cmd": "saveClip"}));
+    let clip = e.wait(10, "clip", |ev| ev["evt"] == "saved");
+    e.send(json!({"cmd": "stopRecording"}));
+    let recording = e.wait(10, "recording", |ev| ev["evt"] == "saved");
+    // Identical stream parameters after the restart, so one file continues.
+    assert_eq!(e.mp4s().len(), 2);
+    assert!(seconds(&probe(&saved(&recording))) >= 7.0);
+    decode_clean(&saved(&recording));
+    decode_clean(&saved(&clip));
+}
+
+#[test]
+fn hung_driver_goes_quiet_so_the_host_can_replace_the_process() {
+    let mut e = Engine::start("hang", &[("TAPE_FAKE_HANG_AFTER", "30")]);
+    e.configure(json!({}));
+    e.wait_status(5, "running", |s| s["video"]["running"] == true);
+    std::thread::sleep(Duration::from_secs(10));
+    while e.events.try_recv().is_ok() {}
+    std::thread::sleep(Duration::from_secs(1));
+    assert!(e.events.try_recv().is_err(), "a hung engine must stop reporting");
+}
+
+#[test]
+fn losing_the_host_finishes_the_recording() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut e = Engine::start("hostgone", &[]);
+    e.configure(json!({}));
+    e.send(json!({"cmd": "startRecording"}));
+    e.wait_status(10, "recording", |s| s["recordingSeconds"].as_f64().unwrap() >= 2.0);
+    // Closing stdin is what the host's death looks like.
+    e.stdin = None;
+    assert!(wait_exit(&mut e.child, 10), "engine should exit with its host");
+    let files = e.mp4s();
+    assert_eq!(files.len(), 1);
+    assert_eq!(top_level(&files[0]).last().unwrap(), "moov", "finished, not left fragmented");
+    decode_clean(&files[0]);
+}
+
+fn wait_exit(child: &mut Child, seconds: u64) -> bool {
+    let until = Instant::now() + Duration::from_secs(seconds);
+    while Instant::now() < until {
+        if child.try_wait().unwrap().is_some() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    false
+}
+
+fn top_level(path: &Path) -> Vec<String> {
+    let data = fs::read(path).unwrap();
+    let (mut out, mut i) = (Vec::new(), 0usize);
+    while i + 8 <= data.len() {
+        let mut size = u32::from_be_bytes(data[i..i + 4].try_into().unwrap()) as usize;
+        if size == 1 {
+            size = u64::from_be_bytes(data[i + 8..i + 16].try_into().unwrap()) as usize;
+        }
+        out.push(String::from_utf8_lossy(&data[i + 4..i + 8]).into_owned());
+        i += size;
+    }
+    out
+}
+
+#[test]
+fn crash_mid_recording_leaves_a_playable_file() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut e = Engine::start("crash", &[("TAPE_FAKE_CRASH_AFTER", "420")]);
+    e.configure(json!({}));
+    e.send(json!({"cmd": "startRecording"}));
+    assert!(wait_exit(&mut e.child, 20), "fake crash should end the process");
+    let files = e.mp4s();
+    assert_eq!(files.len(), 1);
+    let info = probe(&files[0]);
+    let packets: u64 = info["streams"][0]["nb_read_packets"].as_str().unwrap().parse().unwrap();
+    assert!(packets >= 120, "only {packets} frames survived");
+    decode_clean(&files[0]);
+}
+
+#[test]
+fn encoder_settings_changed_mid_recording_wait_for_it_to_end() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut e = Engine::start("deferred", &[]);
+    e.configure(json!({"fps": 60}));
+    e.send(json!({"cmd": "startRecording"}));
+    e.wait_status(10, "recording", |s| s["recordingSeconds"].as_f64().unwrap() >= 1.0);
+    e.configure(json!({"fps": 30, "replaySeconds": 7}));
+    let s = e.wait_status(5, "replay length applied", |s| s["replayTarget"] == 7);
+    assert_eq!(s["recording"], true);
+    assert_eq!(s["restarts"], 0);
+    e.wait_status(10, "still going", |s| s["recordingSeconds"].as_f64().unwrap() >= 3.0);
+    e.send(json!({"cmd": "stopRecording"}));
+    let event = e.wait(10, "saved", |ev| ev["evt"] == "saved");
+    assert_eq!(e.mp4s().len(), 1, "the change must not split the file");
+    let rate = probe(&saved(&event))["streams"][0]["r_frame_rate"].clone();
+    assert_eq!(rate, "60/1");
+    e.wait_status(10, "new rate running", |s| s["video"]["running"] == true && (s["video"]["fps"].as_f64().unwrap() - 30.0).abs() < 5.0);
+}
+
+#[test]
+fn audio_device_loss_does_not_touch_video() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut e = Engine::start("audio", &[("TAPE_FAKE_AUDIO_FAILS", "1")]);
+    e.configure(json!({"replaySeconds": 5}));
+    let s = e.wait_status(5, "device reported lost", |s| s["system"]["problem"].is_string());
+    assert_eq!(s["system"]["running"], false);
+    assert_eq!(s["restarts"], 0);
+    let s = e.wait_status(6, "device back", |s| s["system"]["running"] == true);
+    assert_eq!(s["system"]["problem"], Value::Null);
+    assert_eq!(s["video"]["running"], true);
+}
+
+#[test]
+fn saving_with_replay_off_says_so() {
+    let mut e = Engine::start("off", &[]);
+    e.configure(json!({"replay": false}));
+    e.send(json!({"cmd": "saveClip"}));
+    let event = e.wait(5, "error", |ev| ev["evt"] == "error");
+    assert_eq!(event["clip"], true);
+    assert_eq!(event["message"], "Instant replay is off");
+}
+
+#[test]
+fn both_audio_sources_off_is_a_normal_setup() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut e = Engine::start("silent", &[]);
+    e.configure(json!({"replaySeconds": 5, "systemAudio": "", "microphone": ""}));
+    e.wait_status(12, "buffered", |s| s["replaySeconds"].as_f64().unwrap() >= 4.0);
+    let s = e.wait_status(5, "status", |_| true);
+    assert_eq!(s["restarts"], 0, "the audio thread must not count as failing");
+    e.send(json!({"cmd": "saveClip"}));
+    let event = e.wait(10, "clip", |ev| ev["evt"] == "saved");
+    assert_eq!(probe(&saved(&event))["streams"].as_array().unwrap().len(), 1);
+    decode_clean(&saved(&event));
+}
+
+#[test]
+fn missing_aac_encoder_is_reported_and_video_still_saves() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut e = Engine::start("noaac", &[("TAPE_FAKE_NO_AAC", "1")]);
+    e.configure(json!({"replaySeconds": 5}));
+    let s = e.wait_status(6, "problem shown", |s| s["system"]["problem"].is_string());
+    assert_eq!(s["system"]["problem"], "AAC encoder unavailable");
+    assert_eq!(s["system"]["running"], false);
+    e.wait_status(12, "buffered", |s| s["replaySeconds"].as_f64().unwrap() >= 3.0);
+    e.send(json!({"cmd": "saveClip"}));
+    let event = e.wait(10, "clip", |ev| ev["evt"] == "saved");
+    decode_clean(&saved(&event));
+}

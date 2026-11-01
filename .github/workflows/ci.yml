@@ -1,0 +1,51 @@
+# Tests the platform-free code on Linux against real decoders, then builds on Windows and runs the
+# self-test there. Hosted runners have no NVIDIA GPU, so that exercises everything except NVENC:
+# D3D11, both capture APIs, the video processor, the shader compiler, WASAPI and the AAC encoder.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install ffmpeg
+        run: sudo apt-get update -q && sudo apt-get install -yq ffmpeg
+      - name: Test
+        run: cargo test -p tape-core -p tape-engine -p nvenc
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Unit tests
+        run: cargo test -p tape-core --lib
+
+      - name: Build
+        run: cargo build --release -p tape
+
+      - name: Self-test
+        shell: pwsh
+        run: |
+          $report = "$env:RUNNER_TEMP\self-test.txt"
+          $p = Start-Process -FilePath target\release\tape.exe -ArgumentList "--self-test", $report -Wait -PassThru
+          "exit code $($p.ExitCode)"
+          Get-Content $report
+          if (Select-String -Path $report -Pattern "FAILED" -Quiet) { "::warning::the self-test reported failures" }
+          if (-not (Test-Path $report)) { exit 1 }
+
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: self-test
+          path: ${{ runner.temp }}/self-test.txt

@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>tape</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="titlebar" data-tauri-drag-region>
+    <div class="wordmark" data-tauri-drag-region>tape</div>
+    <div class="tb-state" id="tb-state" data-tauri-drag-region></div>
+    <div class="tb-spacer" data-tauri-drag-region></div>
+    <div class="win-controls">
+      <button class="win-btn" data-act="win-min" title="Minimize" aria-label="Minimize">
+        <svg viewBox="0 0 12 12"><path d="M1 6h10" /></svg>
+      </button>
+      <button class="win-btn close" data-act="win-close" title="Close to tray" aria-label="Close to tray">
+        <svg viewBox="0 0 12 12"><path d="M1.5 1.5l9 9M10.5 1.5l-9 9" /></svg>
+      </button>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="now" aria-label="Status">
+      <div class="plate" style="--cols: 2">
+        <div class="cell"><div class="cap">Instant replay</div><div class="val" id="p-replay"></div><div class="meter"><i id="p-replay-fill"></i></div></div>
+        <div class="cell r-end"><div class="cap">Recording</div><div class="val" id="p-rec"></div><div class="sub" id="p-rec-sub"></div></div>
+        <div class="cell b-end"><div class="cap">Capturing</div><div class="val" id="p-fps"></div><div class="sub" id="p-fps-sub"></div></div>
+        <div class="cell r-end b-end"><div class="cap">Bitrate</div><div class="val" id="p-rate"></div><div class="sub" id="p-rate-sub"></div></div>
+      </div>
+
+      <div class="actions">
+        <button class="btn big" id="b-clip" data-act="clip"><span>Save clip</span><kbd id="k-clip"></kbd></button>
+        <button class="btn big quiet" id="b-rec" data-act="record"><i class="rec-dot"></i><span id="b-rec-text">Start recording</span><kbd id="k-rec"></kbd></button>
+      </div>
+
+      <div id="alerts"></div>
+
+      <div class="list-head">
+        <div class="cap">Recent</div>
+        <button class="link-btn" data-act="open-folder">Open folder</button>
+      </div>
+      <div class="clips" id="clips"></div>
+    </section>
+
+    <section class="settings" id="settings" aria-label="Settings"></section>
+  </main>
+
+  <div id="report" class="report" hidden>
+    <div class="report-box" role="dialog" aria-label="Self-test report">
+      <div class="report-head">
+        <div class="cap">Self-test</div>
+        <div class="report-btns">
+          <button class="btn quiet small" data-act="copy-report">Copy</button>
+          <button class="btn quiet small" data-act="close-report">Close</button>
+        </div>
+      </div>
+      <pre id="report-text"></pre>
+    </div>
+  </div>
+  <div id="toast" class="toast" role="status"></div>
+  <script src="app.js"></script>
+</body>
+</html>

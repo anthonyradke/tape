@@ -48,7 +48,8 @@ fn main() {
         }
         Some("--self-test") => {
             let path = args.get(2).map_or("tape-self-test.txt", String::as_str);
-            std::process::exit(tape_engine::self_test(Path::new(path)));
+            let settings = args.get(3).map(Path::new);
+            std::process::exit(tape_engine::self_test(Path::new(path), settings));
         }
         _ => {}
     }

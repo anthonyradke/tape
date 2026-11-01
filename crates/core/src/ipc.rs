@@ -14,7 +14,6 @@ pub enum Command {
     StopRecording,
     SetReplay { on: bool },
     Probe,
-    SelfTest,
     Shutdown,
 }
 
@@ -106,5 +105,4 @@ pub enum Event {
     Saved { kind: SavedKind, path: String, bytes: u64 },
     /// `clip` is set when this is the answer to a save request, so the host can play the failure cue.
     Error { message: String, clip: bool },
-    SelfTest { report: String },
 }

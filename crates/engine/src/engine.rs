@@ -473,13 +473,6 @@ pub fn run(backend: Arc<dyn Backend>, input: impl BufRead + Send + 'static, mut 
                 let probe = engine.backend.probe();
                 let _ = events.send(Event::Probe { probe: Box::new(probe) });
             }
-            Ok(Command::SelfTest) => {
-                let (backend, settings, events) = (engine.backend.clone(), engine.settings.clone(), events.clone());
-                thread::spawn(move || {
-                    let report = backend.self_test(&settings);
-                    let _ = events.send(Event::SelfTest { report });
-                });
-            }
             Ok(Command::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
             Err(RecvTimeoutError::Timeout) => {}
         }

@@ -34,10 +34,16 @@ pub fn main() -> i32 {
     engine::run(backend, std::io::BufReader::new(std::io::stdin()), std::io::stdout())
 }
 
-/// Entry point for `tape --self-test <file>`, which needs no UI, so it runs on a build machine.
-pub fn self_test(path: &std::path::Path) -> i32 {
+/// Entry point for `tape --self-test <file> [settings.json]`, which needs no UI, so it runs on a
+/// build machine. It's always a process of its own: a process can only duplicate an output once,
+/// so inside a running engine the test would collide with replay and blame Desktop Duplication.
+pub fn self_test(path: &std::path::Path, settings: Option<&std::path::Path>) -> i32 {
     let backend = platform_backend();
-    let report = backend.self_test(&tape_core::settings::Settings::default());
+    let settings = settings
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
+    let report = backend.self_test(&settings);
     match std::fs::write(path, &report) {
         Ok(()) => 0,
         Err(e) => {

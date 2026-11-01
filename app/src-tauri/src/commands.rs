@@ -1,8 +1,9 @@
 //! What the window and the tray can do.
 
 use std::path::Path;
+use std::process::Stdio;
 use std::sync::atomic::Ordering;
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use serde::Serialize;
 use tape_core::ipc::{Command, Probe, Status};
@@ -14,9 +15,11 @@ use tauri_plugin_dialog::DialogExt;
 use crate::cue::{self, Cue};
 use crate::hotkeys;
 use crate::state::{self, Health, Shared};
-use crate::tray;
+use crate::{supervisor, tray};
 
 const RECENT: usize = 40;
+/// It normally takes about 20 seconds.
+const SELF_TEST_LIMIT: Duration = Duration::from_secs(90);
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -244,7 +247,50 @@ pub async fn pick_folder(app: AppHandle) -> Option<String> {
 #[tauri::command]
 pub fn self_test(app: AppHandle) {
     *app.state::<Shared>().self_test.lock().unwrap() = None;
-    state::send(&app, &Command::SelfTest);
+    std::thread::spawn(move || {
+        let shared = app.state::<Shared>();
+        let report = run_self_test(&shared);
+        *shared.self_test.lock().unwrap() = Some(report.clone());
+        let _ = app.emit("selftest", report);
+    });
+}
+
+/// In a process of its own, so a crash in a driver can't take replay down with it. Replay keeps
+/// running throughout, so the report ends with how it's doing, which the test itself can't see.
+fn run_self_test(shared: &Shared) -> String {
+    let file = std::env::temp_dir().join("tape-self-test.txt");
+    let _ = std::fs::remove_file(&file);
+    let started = supervisor::own_process().and_then(|mut process| {
+        process.arg("--self-test").arg(&file).arg(&shared.settings_path);
+        process.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
+    });
+    let mut child = match started {
+        Ok(child) => child,
+        Err(e) => return format!("Couldn't start the self-test: {e}"),
+    };
+    let began = Instant::now();
+    let finished = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if began.elapsed() < SELF_TEST_LIMIT => std::thread::sleep(Duration::from_millis(100)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return format!("The self-test hung and was stopped after {} s.", SELF_TEST_LIMIT.as_secs());
+            }
+        }
+    };
+    let report = match std::fs::read_to_string(&file) {
+        Ok(report) if finished.success() => report,
+        _ => return format!("The self-test crashed before finishing ({finished})."),
+    };
+    let video = shared.status.lock().unwrap().video.clone();
+    let live = if video.running {
+        format!("{}, {:.0} fps, {} dropped, last frame {:.1} ms", video.method, video.fps, video.dropped, video.encode_ms)
+    } else {
+        "not running".to_string()
+    };
+    format!("{report}\nLive replay\n  {live}\n")
 }
 
 #[tauri::command]

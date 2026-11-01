@@ -78,16 +78,22 @@ pub fn start(app: AppHandle) {
         .expect("spawn supervisor");
 }
 
-fn spawn_engine(shared: &Shared) -> std::io::Result<Child> {
-    let exe = std::env::current_exe()?;
-    let mut command = Process::new(exe);
-    command.arg("--engine").arg(&shared.log_path).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+/// This same executable, with no console window.
+pub fn own_process() -> std::io::Result<Process> {
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut command = Process::new(std::env::current_exe()?);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         command.creation_flags(CREATE_NO_WINDOW);
     }
+    Ok(command)
+}
+
+fn spawn_engine(shared: &Shared) -> std::io::Result<Child> {
+    let mut command = own_process()?;
+    command.arg("--engine").arg(&shared.log_path).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
     command.spawn()
 }
 
@@ -290,10 +296,6 @@ fn handle(app: &AppHandle, event: Event, alarm: &mut Alarm) {
                 shared.recording_wanted.store(false, Ordering::Relaxed);
             }
             let _ = app.emit("error", message);
-        }
-        Event::SelfTest { report } => {
-            *shared.self_test.lock().unwrap() = Some(report.clone());
-            let _ = app.emit("selftest", report);
         }
     }
 }

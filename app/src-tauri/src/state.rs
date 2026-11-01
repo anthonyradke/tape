@@ -45,7 +45,7 @@ pub struct Shared {
     pub engine_generation: AtomicU32,
     pub self_test: Mutex<Option<String>>,
     pub log_path: PathBuf,
-    settings_path: PathBuf,
+    pub settings_path: PathBuf,
 }
 
 impl Shared {

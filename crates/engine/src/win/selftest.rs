@@ -248,7 +248,8 @@ fn check_audio(out: &mut String, label: &str, source: Source) {
                     let _ = PlaySoundW(PCWSTR::null(), None, SND_PURGE);
                 }
             }
-            line!(out, "  {label}: OK, {}, {blocks} packets, {samples} samples in 1 s, peak {loudest:.3}, latency {:?} samples", input.name(), first_gap);
+            let latency = first_gap.map_or("unknown".to_string(), |gap| format!("{gap} samples"));
+            line!(out, "  {label}: OK, {}, {blocks} packets, {samples} samples in 1 s, peak {loudest:.3}, latency {latency}", input.name());
         }
     }
 }

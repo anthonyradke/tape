@@ -60,8 +60,9 @@ shared.
 | D3D11, both capture APIs, pointer shaders, AAC (output decoded by ffmpeg) | `tape --self-test report.txt` on a Windows CI runner |
 | NVENC, video processor, WASAPI | The same self-test on a machine with an NVIDIA GPU and sound hardware, from Settings > Run self-test |
 
-`tape --self-test <file>` runs each stage of the pipeline and writes a plain text report, including a
-check that captured frames aren't black.
+`tape --self-test <file> [settings.json]` runs each stage of the pipeline and writes a plain text report,
+including a check that captured frames aren't black. Settings > Run self-test starts the same command in its own
+process, because a process can only duplicate an output once and replay stays running during the test.
 
 ## Build
 

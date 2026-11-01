@@ -288,7 +288,7 @@ document.addEventListener("click", async (e) => {
       return;
     }
     case "self-test":
-      $("report-text").textContent = "Running. This takes about 15 seconds, and briefly starts a second capture.";
+      $("report-text").textContent = "Running. This takes about 20 seconds, and replay keeps running.";
       $("report").hidden = false;
       return invoke("self_test");
     case "close-report":

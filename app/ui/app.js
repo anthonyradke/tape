@@ -22,6 +22,7 @@ function renderSettings() {
   html.push(`<div class="group"><span class="cap">Video</span>
     ${monitors.length > 1 ? row("Monitor", select("monitor", monitors, s.monitor)) : ""}
     ${row("Resolution", select("resolution", heights, s.resolution))}
+    ${upscaleNote()}
     ${row("Frame rate", select("fps", FPS.map((f) => [f, `${f} fps`]), s.fps))}
     ${row("Format", select("codec", codecs, s.codec))}
     <p class="note">${esc(codecNote || "")}</p>

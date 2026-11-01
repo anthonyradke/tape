@@ -50,7 +50,8 @@ pub struct Settings {
     pub folder: String,
     /// Output device name, empty for the primary monitor.
     pub monitor: String,
-    /// Output height in pixels, 0 for the monitor's own resolution.
+    /// Output size in pixels along the short edge, as in 1440p, 0 for the monitor's own resolution.
+    /// Can be above the monitor's, which upscales.
     pub resolution: u32,
     pub fps: u32,
     pub codec: Codec,
@@ -129,14 +130,12 @@ impl Settings {
         (self.bitrate_mbps as f64 * 1000.0 * PEAK) as u32
     }
 
-    /// Output size for a monitor, keeping its shape, with even dimensions as the encoder needs.
+    /// Output size for a monitor, up or down, keeping its shape, with even dimensions as the encoder
+    /// needs. Goes by the short edge, so 1440p means the same on a monitor turned on its side.
     pub fn output_size(&self, width: u32, height: u32) -> (u32, u32) {
-        let (w, h) = if self.resolution == 0 || self.resolution >= height {
-            (width, height)
-        } else {
-            let scaled = (width as u64 * self.resolution as u64 / height as u64) as u32;
-            (scaled, self.resolution)
-        };
+        let short = width.min(height).max(1) as u64;
+        let scale = |edge: u32| (edge as u64 * self.resolution as u64 / short) as u32;
+        let (w, h) = if self.resolution == 0 { (width, height) } else { (scale(width), scale(height)) };
         (w & !1, h & !1)
     }
 
@@ -190,9 +189,21 @@ mod tests {
         let s = Settings { resolution: 1080, ..Default::default() };
         assert_eq!(s.output_size(2560, 1440), (1920, 1080));
         assert_eq!(s.output_size(3440, 1440), (2580, 1080));
-        assert_eq!(s.output_size(1366, 768), (1366, 768)); // no upscaling
         let native = Settings::default();
         assert_eq!(native.output_size(1367, 769), (1366, 768));
+    }
+
+    #[test]
+    fn output_can_be_larger_than_the_monitor() {
+        let at = |resolution| Settings { resolution, ..Default::default() }.output_size(1920, 1080);
+        assert_eq!(at(1440), (2560, 1440));
+        assert_eq!(at(2160), (3840, 2160));
+    }
+
+    #[test]
+    fn resolution_goes_by_the_short_edge() {
+        let s = Settings { resolution: 1440, ..Default::default() };
+        assert_eq!(s.output_size(1080, 1920), (1440, 2560));
     }
 
     #[test]

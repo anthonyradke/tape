@@ -11,6 +11,7 @@ function render() {
   const { settings: s, probe: p, status } = view;
   $("ov-settings").innerHTML = `<div class="group"><span class="cap">Video</span>
       ${row("Resolution", select("resolution", heightOptions(), s.resolution))}
+      ${upscaleNote()}
       ${row("Frame rate", select("fps", FPS.map((f) => [f, `${f} fps`]), s.fps))}
       ${row("Bitrate", range("bitrateMbps", 5, 150, 5, " Mbps", "Bitrate"))}
       ${status.recording ? `<p class="note warn">Applies when the recording stops.</p>` : ""}

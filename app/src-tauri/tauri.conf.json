@@ -34,7 +34,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDY1RDUyQjcyOEQ3QTQ1NjMKUldSalJYcU5jaXZWWmZZci9VUHZPMnpmbC9BTDh1NWVFREF4Ny9PYkxpTEgwWHZXT2xZSkZlV0sK",
       "endpoints": [
-        "https://updates.example.com:8448/latest.json"
+        "https://github.com/anthonyradke/tape/releases/latest/download/latest.json"
       ],
       "windows": {
         "installMode": "passive"

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# For a local test build. Releases are built by CI, see .github/workflows/release.yml.
 # Cross-compiles the Windows app and installer on Linux with cargo-xwin, then copies the
 # installer and its update signature to dist/. Needs: rustup target x86_64-pc-windows-msvc,
 # cargo-xwin, tauri-cli, nsis, lld, and the signing key in ~/.tauri.

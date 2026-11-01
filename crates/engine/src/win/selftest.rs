@@ -133,7 +133,8 @@ fn check_overlay(out: &mut String, output: &OutputInfo) {
     }
 }
 
-fn check_encode(out: &mut String, settings: &Settings, codec: Codec) {
+/// `label` names the line in the report and the file it leaves behind.
+fn check_encode(out: &mut String, settings: &Settings, codec: Codec, label: &str) {
     let settings = Settings { codec, replay: true, replay_seconds: 30, ..settings.clone() };
     let sink = Sink::new(true, 30);
     sink.set_audio(mix::tracks(&settings));
@@ -160,7 +161,7 @@ fn check_encode(out: &mut String, settings: &Settings, codec: Codec) {
     stop.store(true, Ordering::Relaxed);
     let result = thread.join().unwrap_or_else(|_| Err("panicked".into()));
     let audio = audio_thread.join().unwrap_or_else(|_| Err("panicked".into()));
-    let name = codec_name(codec);
+    let name = label;
     if let Err(e) = result {
         line!(out, "  {name}: FAILED, {e}");
         return;
@@ -178,7 +179,8 @@ fn check_encode(out: &mut String, settings: &Settings, codec: Codec) {
     });
     match written {
         Some(Ok(bytes)) => {
-            line!(out, "  {name}: OK, {encoded} frames, {dropped} dropped, last frame {ms:.1} ms, {method}, wrote {bytes} bytes to {}", file.display());
+            let (width, height) = (stats.width.load(Ordering::Relaxed), stats.height.load(Ordering::Relaxed));
+            line!(out, "  {name}: OK, {width}x{height}, {encoded} frames, {dropped} dropped, last frame {ms:.1} ms, {method}, wrote {bytes} bytes to {}", file.display());
         }
         Some(Err(e)) => {
             line!(out, "  {name}: FAILED writing the file, {e}");
@@ -331,9 +333,13 @@ pub fn report(backend: &Windows, settings: &Settings) -> String {
         Some(Ok(codecs)) => {
             let names: Vec<_> = codecs.iter().map(|c| codec_name(*c)).collect();
             line!(out, "  this GPU encodes {}", names.join(", "));
+            let settings = Settings { capture: CaptureMethod::Auto, ..settings.clone() };
             for codec in codecs {
-                check_encode(&mut out, &Settings { capture: CaptureMethod::Auto, ..settings.clone() }, codec);
+                check_encode(&mut out, &settings, codec, codec_name(codec));
             }
+            // The largest size on offer, whatever this monitor is. Upscaling goes through the same
+            // scaler but asks more of it and of the encoder's limits.
+            check_encode(&mut out, &Settings { resolution: 2160, ..settings.clone() }, Codec::H264, "H.264-4K");
         }
     }
 

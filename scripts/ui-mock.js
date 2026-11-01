@@ -1,6 +1,7 @@
 // A fake backend so the UI can run in a normal browser. See ui-preview.sh.
 (() => {
   const q = new URLSearchParams(location.search);
+  let shown = 0;
   const scene = q.get("scene") || "replay";
   const settings = {
     folder: "", monitor: "", resolution: 0, fps: 60, codec: "h264", bitrateMbps: 50, preset: "balanced", capture: "auto",
@@ -11,7 +12,7 @@
   const recording = scene === "recording";
   const trouble = scene === "trouble";
   const status = {
-    video: { running: !trouble && scene !== "off" || recording, width: 2560, height: 1440, fps: 60, method: "Desktop Duplication", encodeMs: 4.1, dropped: 0, bitrateKbps: 41800, problem: null },
+    video: { running: !trouble && scene !== "off" || recording, width: 1920, height: 1080, fps: 60, method: "Desktop Duplication", encodeMs: 4.1, dropped: 0, bitrateKbps: 41800, problem: null },
     system: { name: "Headphones (Arctis Nova 5)", running: true, peak: 0.42, problem: null },
     mic: settings.microphone ? { name: "Headset Microphone", running: true, peak: 0.18, problem: null } : null,
     replayOn: settings.replay, replaySeconds: 87.4, replayTarget: 120, replayBytes: 480e6,
@@ -23,14 +24,14 @@
   const clip = (game, ago, size, kind = "clip") => {
     const d = new Date(now - ago * 60000);
     const name = `${game} ${d.getFullYear()}.${pad(d.getMonth() + 1)}.${pad(d.getDate())} - ${pad(d.getHours())}.${pad(d.getMinutes())}.${pad(d.getSeconds())}.11${kind === "clip" ? ".DVR" : ""}.mp4`;
-    return { path: `sample.mp4?${game}${ago}`, name, game, kind, bytes: size, modified: d.getTime(), key: `${game}${ago}`.replace(/[^a-f0-9]/gi, "a"), thumb: null, seconds: null };
+    return { path: `sample.mp4?${game}${ago}`, name, game, kind, bytes: size, modified: d.getTime(), key: `${game}${ago}`.replace(/[^a-f0-9]/gi, "a"), thumb: q.get("thumbs") ? `thumb-${shown++}.jpg` : null, seconds: q.get("thumbs") ? 120 : null };
   };
   let view = {
     settings, status,
     probe: {
       gpu: "NVIDIA GeForce RTX 4070", driver: "32.0.15.6614", codecs: ["h264", "hevc", "av1"], nvencError: null,
       monitors: [
-        { id: "\\\\.\\DISPLAY1", name: "Monitor 1", width: 2560, height: 1440, hz: 165, primary: true },
+        { id: "\\\\.\\DISPLAY1", name: "Monitor 1", width: 1920, height: 1080, hz: 240, primary: true },
         { id: "\\\\.\\DISPLAY2", name: "Monitor 2", width: 1920, height: 1080, hz: 60, primary: false },
       ],
       outputs: [{ id: "out-1", name: "Headphones (Arctis Nova 5)" }, { id: "out-2", name: "Speakers (Realtek Audio)" }],

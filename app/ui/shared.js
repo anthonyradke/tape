@@ -7,7 +7,7 @@ const { listen } = window.__TAURI__.event;
 const $ = (id) => document.getElementById(id);
 
 const FPS = [30, 60, 120, 144, 165, 240];
-const HEIGHTS = [2160, 1440, 1080, 720];
+const HEIGHTS = [[2160, "2160p (4K)"], [1440, "1440p (2K)"], [1080, "1080p"], [720, "720p"]];
 const LENGTHS = [[30, "30 seconds"], [60, "1 minute"], [120, "2 minutes"], [300, "5 minutes"], [600, "10 minutes"], [900, "15 minutes"], [1200, "20 minutes"]];
 const CODECS = [["h264", "H.264", "plays everywhere"], ["hevc", "HEVC", "smaller files, less widely playable"], ["av1", "AV1", "smallest files, newest GPUs only"]];
 const PRESETS = [["fast", "Fast"], ["balanced", "Balanced"], ["quality", "Quality"]];
@@ -77,13 +77,28 @@ function deviceOptions(devices, value, offLabel) {
   return options;
 }
 
-function heightOptions() {
+const currentMonitor = () => {
   const { settings: s, probe: p } = view;
-  const current = p.monitors.find((m) => m.id === s.monitor) || p.monitors.find((m) => m.primary) || p.monitors[0];
+  return p.monitors.find((m) => m.id === s.monitor) || p.monitors.find((m) => m.primary) || p.monitors[0];
+};
+
+// Sizes go by the monitor's short edge, so these mean the same on one turned on its side.
+function heightOptions() {
+  const s = view.settings;
+  const current = currentMonitor();
+  const short = current ? Math.min(current.width, current.height) : 0;
   const native = current ? `Monitor, ${current.width}×${current.height}` : "Monitor";
-  const heights = [[0, native], ...HEIGHTS.filter((h) => !current || h < current.height).map((h) => [h, `${h}p`])];
+  const heights = [[0, native], ...HEIGHTS.filter(([h]) => h !== short)];
   if (s.resolution && !heights.some(([h]) => h === s.resolution)) heights.push([s.resolution, `${s.resolution}p`]);
   return heights;
+}
+
+// Said wherever the resolution can be changed, since more pixels here isn't more picture.
+function upscaleNote() {
+  const s = view.settings;
+  const current = currentMonitor();
+  if (!current || s.resolution <= Math.min(current.width, current.height)) return "";
+  return `<p class="note">Upscaled from ${current.width}×${current.height}. Files get larger and the picture gains no detail, but sites like YouTube keep higher resolutions at better quality. Raise the bitrate to match.</p>`;
 }
 
 function renderReplaySwitch() {

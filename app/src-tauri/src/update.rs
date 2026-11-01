@@ -1,6 +1,5 @@
-//! Self-update, the same scheme as kit and backdrop: a signed installer and a latest.json. tape's
-//! repo is private, so GitHub Releases can't serve them. the server does, over the tailnet (see
-//! scripts/release.sh). tape checks quietly and only installs when asked.
+//! Self-update from GitHub Releases: a signed installer and a latest.json, published by the release
+//! workflow. tape checks quietly and only installs when asked.
 
 use std::sync::Mutex;
 use std::time::Duration;
@@ -103,7 +102,7 @@ pub async fn check(app: &AppHandle) {
                 s.error = None;
             });
         }
-        // Away from the tailnet is normal. Keep what's known, and only say why when asked.
+        // Being offline is normal. Keep what's known, and only say why when asked.
         Err(e) => set(app, |s| s.error = Some(e.to_string())),
     }
     set(app, |s| {

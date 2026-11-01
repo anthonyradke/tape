@@ -16,10 +16,12 @@ const CHANNELS: u32 = 2;
 const BYTES_PER_SECOND: u32 = 24_000; // 192 kb/s, one of the encoder's four fixed rates
 const AAC_LC_LEVEL_2: u32 = 0x29;
 const RAW_AAC: u32 = 0;
+const FRAME_100NS: i64 = AAC_FRAME as i64 * 10_000_000 / AUDIO_RATE as i64;
 
 pub struct Aac {
     transform: IMFTransform,
     output_size: u32,
+    frames: i64,
 }
 
 fn text(e: windows::core::Error) -> String {
@@ -61,7 +63,7 @@ impl Aac {
             let info = transform.GetOutputStreamInfo(0)?;
             transform.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)?;
             transform.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)?;
-            Ok(Aac { transform, output_size: info.cbSize.max(8192) })
+            Ok(Aac { transform, output_size: info.cbSize.max(8192), frames: 0 })
         }
     }
 
@@ -75,6 +77,11 @@ impl Aac {
             buffer.SetCurrentLength(pcm.len() as u32)?;
             let sample = MFCreateSample()?;
             sample.AddBuffer(&buffer)?;
+            // The encoder refuses samples without these. They don't reach the file: packet times
+            // come from the mixer's own timeline.
+            sample.SetSampleTime(self.frames * FRAME_100NS)?;
+            sample.SetSampleDuration(FRAME_100NS)?;
+            self.frames += 1;
             self.transform.ProcessInput(0, &sample, 0)
         }
     }

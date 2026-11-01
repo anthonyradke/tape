@@ -2,8 +2,8 @@
 //! is what to look at first when something doesn't work on real hardware.
 
 use std::fmt::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tape_core::audio::{peak, to_i16};
@@ -11,17 +11,20 @@ use tape_core::mp4::write_clip;
 use tape_core::packet::{Codec, AAC_FRAME};
 use tape_core::settings::{CaptureMethod, Settings, FOLLOW_DEFAULT};
 use tape_core::sink::Sink;
-use windows::core::{s, w};
+use windows::core::{s, w, PCWSTR};
 use windows::Win32::Graphics::Direct3D11::*;
-use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_NV12, DXGI_SAMPLE_DESC};
+use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_NV12;
+use windows::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT, SND_PURGE};
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows::Win32::System::SystemInformation::OSVERSIONINFOW;
 
 use super::capture::{Capture, CaptureError, Duplication, GraphicsCapture};
 use super::convert::Converter;
+use super::cursor::Overlay;
 use super::gfx::{self, Gfx, OutputInfo};
 use super::{codec_name, encoder, wasapi, Windows};
-use crate::backend::{AudioBlock, AudioInput, Backend, Clock, Source, VideoContext, VideoStats};
+use crate::backend::{AudioBlock, AudioContext, AudioInput, AudioShared, Backend, Clock, Source, VideoContext, VideoStats};
+use crate::mix;
 
 const CAPTURE_SECONDS: u64 = 2;
 const ENCODE_SECONDS: u64 = 4;
@@ -41,29 +44,29 @@ fn os_version() -> String {
     }
 }
 
-/// Reads the converted frame back and summarizes its brightness, which tells a real image from a
-/// black one, the classic sign of capture silently not working.
-fn luma_stats(gfx: &Gfx, nv12: &ID3D11Texture2D, width: u32, height: u32) -> Result<String, String> {
+/// Reads a frame back and summarizes its brightness, which tells a real image from a black one,
+/// the classic sign of capture silently not working. Takes NV12 (luma plane) or BGRA (green).
+fn image_stats(gfx: &Gfx, texture: &ID3D11Texture2D) -> Result<String, String> {
+    let mut desc = D3D11_TEXTURE2D_DESC::default();
+    unsafe { texture.GetDesc(&mut desc) };
+    let (width, height) = (desc.Width as usize, desc.Height as usize);
+    let (step, offset, floor) = if desc.Format == DXGI_FORMAT_NV12 { (1, 0, 17) } else { (4, 1, 1) };
     let staging = gfx.create_texture(&D3D11_TEXTURE2D_DESC {
-        Width: width,
-        Height: height,
-        MipLevels: 1,
-        ArraySize: 1,
-        Format: DXGI_FORMAT_NV12,
-        SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
         Usage: D3D11_USAGE_STAGING,
         BindFlags: 0,
         CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
         MiscFlags: 0,
+        ..desc
     })?;
     unsafe {
-        gfx.context.CopyResource(&staging, nv12);
+        gfx.context.CopyResource(&staging, texture);
         let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
         gfx.context.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped)).map_err(|e| e.to_string())?;
         let (mut low, mut high, mut sum, mut count) = (255u8, 0u8, 0u64, 0u64);
-        for y in (0..height as usize).step_by(4) {
-            let row = std::slice::from_raw_parts(mapped.pData.cast::<u8>().add(y * mapped.RowPitch as usize), width as usize);
-            for &v in row.iter().step_by(4) {
+        for y in (0..height).step_by(4) {
+            let row = std::slice::from_raw_parts(mapped.pData.cast::<u8>().add(y * mapped.RowPitch as usize), width * step);
+            for pixel in row.chunks_exact(step).step_by(4) {
+                let v = pixel[offset];
                 low = low.min(v);
                 high = high.max(v);
                 sum += v as u64;
@@ -72,8 +75,8 @@ fn luma_stats(gfx: &Gfx, nv12: &ID3D11Texture2D, width: u32, height: u32) -> Res
         }
         gfx.context.Unmap(&staging, 0);
         let mean = sum / count.max(1);
-        let verdict = if high <= 17 { "ALL BLACK" } else if low == high { "flat color" } else { "has picture detail" };
-        Ok(format!("luma {low}..{high}, mean {mean}: {verdict}"))
+        let verdict = if high <= floor { "ALL BLACK" } else if low == high { "flat color" } else { "has picture detail" };
+        Ok(format!("{low}..{high}, mean {mean}: {verdict}"))
     }
 }
 
@@ -87,8 +90,6 @@ fn check_capture(out: &mut String, output: &OutputInfo, graphics: bool) {
             Duplication::open(&gfx, output, true).map(|c| Box::new(c) as _)
         };
         let mut capture = opened.map_err(|e| e.message().to_string())?;
-        let (width, height) = (output.width & !1, output.height & !1);
-        let mut converter = Converter::new(&gfx, width, height)?;
         let started = Instant::now();
         let mut frames = 0;
         while started.elapsed() < Duration::from_secs(CAPTURE_SECONDS) {
@@ -99,9 +100,16 @@ fn check_capture(out: &mut String, output: &OutputInfo, graphics: bool) {
         let Some(frame) = capture.frame() else {
             return Ok(format!("{frames} updates, no image (a static desktop may not produce one)"));
         };
-        converter.convert(&frame)?;
-        let image = luma_stats(&gfx, converter.target(), width, height)?;
-        Ok(format!("{frames} updates in {CAPTURE_SECONDS} s, {image}"))
+        let raw = image_stats(&gfx, &frame)?;
+        let (width, height) = (output.width & !1, output.height & !1);
+        let converted = match Converter::new(&gfx, width, height) {
+            Ok(mut converter) => {
+                converter.convert(&frame)?;
+                format!("converted {}", image_stats(&gfx, converter.target())?)
+            }
+            Err(e) => format!("not converted, {e}"),
+        };
+        Ok(format!("{frames} updates in {CAPTURE_SECONDS} s, raw {raw}, {converted}"))
     })();
     match result {
         Ok(text) => {
@@ -113,23 +121,52 @@ fn check_capture(out: &mut String, output: &OutputInfo, graphics: bool) {
     }
 }
 
+fn check_overlay(out: &mut String, output: &OutputInfo) {
+    let result = Gfx::new(&output.adapter).and_then(|gfx| Overlay::new(&gfx));
+    match result {
+        Ok(_) => {
+            line!(out, "  Pointer overlay: OK, shaders compiled");
+        }
+        Err(e) => {
+            line!(out, "  Pointer overlay: FAILED, {e}");
+        }
+    }
+}
+
 fn check_encode(out: &mut String, settings: &Settings, codec: Codec) {
     let settings = Settings { codec, replay: true, replay_seconds: 30, ..settings.clone() };
     let sink = Sink::new(true, 30);
+    sink.set_audio(mix::tracks(&settings));
     let stop = Arc::new(AtomicBool::new(false));
     let stats = Arc::new(VideoStats::default());
-    let ctx = VideoContext { sink: sink.clone(), clock: Clock::new(), stop: stop.clone(), stats: stats.clone() };
+    let clock = Clock::new();
+    let ctx = VideoContext { sink: sink.clone(), clock, stop: stop.clone(), stats: stats.clone() };
     let thread = {
         let settings = settings.clone();
         std::thread::spawn(move || super::video::run(&settings, &ctx))
     };
+    let shared = Arc::new(AudioShared {
+        system_volume: AtomicU32::new(100),
+        mic_volume: AtomicU32::new(100),
+        system: Mutex::new(None),
+        mic: Mutex::new(None),
+    });
+    let audio_thread = {
+        let settings = settings.clone();
+        let ctx = AudioContext { sink: sink.clone(), clock, stop: stop.clone(), shared };
+        std::thread::spawn(move || mix::run(&Windows, &settings, &ctx))
+    };
     std::thread::sleep(Duration::from_secs(ENCODE_SECONDS));
     stop.store(true, Ordering::Relaxed);
     let result = thread.join().unwrap_or_else(|_| Err("panicked".into()));
+    let audio = audio_thread.join().unwrap_or_else(|_| Err("panicked".into()));
     let name = codec_name(codec);
     if let Err(e) = result {
         line!(out, "  {name}: FAILED, {e}");
         return;
+    }
+    if let Err(e) = audio {
+        line!(out, "  {name}: audio FAILED, {e}");
     }
     let (encoded, dropped) = (stats.encoded.load(Ordering::Relaxed), stats.dropped.load(Ordering::Relaxed));
     let ms = stats.encode_us.load(Ordering::Relaxed) as f32 / 1000.0;
@@ -152,6 +189,32 @@ fn check_encode(out: &mut String, settings: &Settings, codec: Codec) {
     }
 }
 
+/// One second of a quiet tone as a WAV file. Loopback delivers nothing while nothing is playing,
+/// so this is what shows that game audio really gets captured.
+fn test_tone() -> Vec<u8> {
+    const RATE: u32 = 48_000;
+    let data = RATE * 2;
+    let mut wav = Vec::with_capacity(44 + data as usize);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&RATE.to_le_bytes());
+    wav.extend_from_slice(&(RATE * 2).to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data.to_le_bytes());
+    for n in 0..RATE {
+        let t = n as f32 / RATE as f32;
+        let value = (t * 440.0 * std::f32::consts::TAU).sin() * 0.1 * 32767.0;
+        wav.extend_from_slice(&(value as i16).to_le_bytes());
+    }
+    wav
+}
+
 fn check_audio(out: &mut String, label: &str, source: Source) {
     let clock = Clock::new();
     match wasapi::Input::open(source, FOLLOW_DEFAULT, clock) {
@@ -159,6 +222,10 @@ fn check_audio(out: &mut String, label: &str, source: Source) {
             line!(out, "  {label}: not available, {e}");
         }
         Ok(mut input) => {
+            let tone = test_tone();
+            if source == Source::System {
+                let _ = unsafe { PlaySoundW(PCWSTR(tone.as_ptr().cast()), None, SND_MEMORY | SND_ASYNC | SND_NODEFAULT) };
+            }
             let (mut blocks, mut samples, mut loudest) = (0, 0, 0.0f32);
             let until = Instant::now() + Duration::from_secs(1);
             let mut first_gap = None;
@@ -176,29 +243,48 @@ fn check_audio(out: &mut String, label: &str, source: Source) {
                 }
                 std::thread::sleep(Duration::from_millis(5));
             }
+            if source == Source::System {
+                unsafe {
+                    let _ = PlaySoundW(PCWSTR::null(), None, SND_PURGE);
+                }
+            }
             line!(out, "  {label}: OK, {}, {blocks} packets, {samples} samples in 1 s, peak {loudest:.3}, latency {:?} samples", input.name(), first_gap);
         }
     }
 }
 
+/// Encodes a 1 kHz tone and writes it as ADTS, which any decoder can read, so a build machine can
+/// check that what the encoder makes is real AAC of the format the MP4 declares.
 fn check_aac(out: &mut String, backend: &Windows) {
+    let file = std::env::temp_dir().join("tape-selftest.aac");
     let result = (|| -> Result<(usize, usize), String> {
         let mut encoder = backend.aac_encoder()?;
-        let silence = vec![0.0f32; AAC_FRAME * 2];
-        let mut pcm = Vec::new();
-        to_i16(&silence, &mut pcm);
-        let (mut frames, mut bytes) = (0, 0);
+        let (mut frames, mut bytes, mut adts, mut position) = (0, 0, Vec::new(), 0usize);
         for _ in 0..100 {
+            let mut block = Vec::with_capacity(AAC_FRAME * 2);
+            for _ in 0..AAC_FRAME {
+                let t = position as f32 / 48_000.0;
+                let v = (t * 1000.0 * std::f32::consts::TAU).sin() * 0.5;
+                block.extend_from_slice(&[v, v]);
+                position += 1;
+            }
+            let mut pcm = Vec::new();
+            to_i16(&block, &mut pcm);
             for frame in encoder.encode(&pcm)? {
                 frames += 1;
                 bytes += frame.len();
+                let total = frame.len() + 7;
+                // AAC LC, 48 kHz, stereo, no CRC.
+                adts.extend_from_slice(&[0xff, 0xf1, 0x4c, 0x80 | (total >> 11) as u8, (total >> 3) as u8, ((total & 7) << 5) as u8 | 0x1f, 0xfc]);
+                adts.extend_from_slice(&frame);
             }
         }
+        std::fs::write(&file, adts).map_err(|e| e.to_string())?;
         Ok((frames, bytes))
     })();
     match result {
         Ok((frames, bytes)) => {
-            line!(out, "  AAC: OK, 100 frames in, {frames} out, {bytes} bytes");
+            line!(out, "  AAC: OK, 100 frames in, {frames} out, {bytes} bytes, wrote {}", file.display());
         }
         Err(e) => {
             line!(out, "  AAC: FAILED, {e}");
@@ -229,6 +315,7 @@ pub fn report(backend: &Windows, settings: &Settings) -> String {
     if let Some(output) = chosen {
         check_capture(&mut out, output, false);
         check_capture(&mut out, output, true);
+        check_overlay(&mut out, output);
     }
 
     line!(out, "\nEncode");

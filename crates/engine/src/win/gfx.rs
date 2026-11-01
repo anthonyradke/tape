@@ -122,21 +122,28 @@ pub struct Gfx {
 impl Gfx {
     pub fn new(adapter: &IDXGIAdapter1) -> Result<Gfx, String> {
         let adapter: IDXGIAdapter = adapter.cast().map_err(|e| e.to_string())?;
-        let (mut device, mut context) = (None, None);
-        unsafe {
-            D3D11CreateDevice(
-                &adapter,
-                D3D_DRIVER_TYPE_UNKNOWN,
-                HMODULE::default(),
-                D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
-                Some(&[D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0]),
-                D3D11_SDK_VERSION,
-                Some(&mut device),
-                None,
-                Some(&mut context),
-            )
-        }
-        .map_err(|e| format!("couldn't create a D3D11 device: {e}"))?;
+        let create = |flags: D3D11_CREATE_DEVICE_FLAG| {
+            let (mut device, mut context) = (None, None);
+            unsafe {
+                D3D11CreateDevice(
+                    &adapter,
+                    D3D_DRIVER_TYPE_UNKNOWN,
+                    HMODULE::default(),
+                    flags,
+                    Some(&[D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0]),
+                    D3D11_SDK_VERSION,
+                    Some(&mut device),
+                    None,
+                    Some(&mut context),
+                )
+            }
+            .map(|_| (device, context))
+        };
+        // A GPU with no video engine still captures, which is what the self-test wants to know
+        // on one. The converter is what reports that it can't go further.
+        let (device, context) = create(D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT)
+            .or_else(|_| create(D3D11_CREATE_DEVICE_BGRA_SUPPORT))
+            .map_err(|e| format!("couldn't create a D3D11 device: {e}"))?;
         let (device, context): (ID3D11Device, ID3D11DeviceContext) = (device.unwrap(), context.unwrap());
         if let Ok(guard) = context.cast::<ID3D11Multithread>() {
             // The encoder uses this device from inside the driver.

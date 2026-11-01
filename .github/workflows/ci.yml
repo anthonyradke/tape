@@ -33,6 +33,26 @@ jobs:
       - name: Build
         run: cargo build --release -p tape
 
+      # Hosted runners have no sound hardware. Scream is a virtual sound card, which gives WASAPI
+      # a real endpoint to capture from.
+      - name: Install a virtual sound card
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          Start-Service audio*
+          Invoke-WebRequest https://github.com/duncanthrax/scream/releases/download/4.0/Scream4.0.zip -OutFile Scream.zip
+          Expand-Archive Scream.zip -DestinationPath Scream
+          $inf = Get-ChildItem Scream -Recurse -Filter Scream.inf | Where-Object { $_.FullName -match 'x64' } | Select-Object -First 1
+          $sys = Get-ChildItem Scream -Recurse -Filter Scream.sys | Where-Object { $_.FullName -match 'x64' } | Select-Object -First 1
+          $devcon = Get-ChildItem Scream -Recurse -Filter 'devcon*x64*.exe' | Select-Object -First 1
+          $cert = (Get-AuthenticodeSignature $sys.FullName).SignerCertificate
+          $store = [System.Security.Cryptography.X509Certificates.X509Store]::new("TrustedPublisher", "LocalMachine")
+          $store.Open("ReadWrite"); $store.Add($cert); $store.Close()
+          Push-Location $inf.DirectoryName
+          & $devcon.FullName install Scream.inf "*Scream"
+          Pop-Location
+          Start-Sleep -Seconds 5
+
       - name: Self-test
         shell: pwsh
         run: |
@@ -40,6 +60,7 @@ jobs:
           $p = Start-Process -FilePath target\release\tape.exe -ArgumentList "--self-test", $report -Wait -PassThru
           "exit code $($p.ExitCode)"
           Get-Content $report
+          Copy-Item "$env:TEMP\tape-selftest.aac" $env:RUNNER_TEMP -ErrorAction SilentlyContinue
           if (Select-String -Path $report -Pattern "FAILED" -Quiet) { "::warning::the self-test reported failures" }
           if (-not (Test-Path $report)) { exit 1 }
 
@@ -48,4 +69,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: self-test
-          path: ${{ runner.temp }}/self-test.txt
+          path: |
+            ${{ runner.temp }}/self-test.txt
+            ${{ runner.temp }}/tape-selftest.aac

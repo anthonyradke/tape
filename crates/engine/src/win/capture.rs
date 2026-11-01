@@ -23,6 +23,7 @@ use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemIntero
 
 use super::cursor::Overlay;
 use super::gfx::{Gfx, OutputInfo};
+use crate::log;
 
 pub enum CaptureError {
     /// Normal while a UAC prompt or the lock screen is up. Reopen and keep going.
@@ -106,7 +107,12 @@ impl Duplication {
                 CaptureError::Refused(format!("Desktop Duplication: {e}"))
             }
         })?;
-        let overlay = if show_cursor { Overlay::new(gfx).ok() } else { None };
+        let overlay = if show_cursor {
+            // Capture is worth having without a pointer, so this doesn't stop anything.
+            Overlay::new(gfx).map_err(|e| log!("pointer overlay: {e}")).ok()
+        } else {
+            None
+        };
         Ok(Duplication {
             gfx: gfx.clone(),
             duplication,

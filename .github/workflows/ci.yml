@@ -37,6 +37,8 @@ jobs:
       # a real endpoint to capture from.
       - name: Install a virtual sound card
         continue-on-error: true
+        # An untrusted driver raises a dialog nobody can answer here, so this has to be able to give up.
+        timeout-minutes: 3
         shell: pwsh
         run: |
           Start-Service audio*
@@ -46,8 +48,10 @@ jobs:
           $sys = Get-ChildItem Scream -Recurse -Filter Scream.sys | Where-Object { $_.FullName -match 'x64' } | Select-Object -First 1
           $devcon = Get-ChildItem Scream -Recurse -Filter 'devcon*x64*.exe' | Select-Object -First 1
           $cert = (Get-AuthenticodeSignature $sys.FullName).SignerCertificate
-          $store = [System.Security.Cryptography.X509Certificates.X509Store]::new("TrustedPublisher", "LocalMachine")
-          $store.Open("ReadWrite"); $store.Add($cert); $store.Close()
+          foreach ($name in "Root", "TrustedPublisher") {
+            $store = [System.Security.Cryptography.X509Certificates.X509Store]::new($name, "LocalMachine")
+            $store.Open("ReadWrite"); $store.Add($cert); $store.Close()
+          }
           Push-Location $inf.DirectoryName
           & $devcon.FullName install Scream.inf "*Scream"
           Pop-Location

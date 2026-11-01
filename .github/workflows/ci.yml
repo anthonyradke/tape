@@ -89,7 +89,9 @@ jobs:
             if ($c.audioBytes -le 0) { $bad += "$($c.name): no audio decoded" }
             if ($c.seekedTo -le 0) { $bad += "$($c.name): didn't seek" }
           }
-          if ($r.clips.name -notmatch "^Test Game \d{4}\.\d\d\.\d\d - \d\d\.\d\d\.\d\d\.\d\d\.DVR\.mp4$") { $bad += "clip name" }
+          $stamp = "^Test Game \d{4}\.\d\d\.\d\d - \d\d\.\d\d\.\d\d\.\d\d"
+          if ((Split-Path $r.clipPath -Leaf) -notmatch "$stamp\.DVR\.mp4$") { $bad += "clip name: $($r.clipPath)" }
+          if ((Split-Path $r.recordingPath -Leaf) -notmatch "$stamp\.mp4$") { $bad += "recording name: $($r.recordingPath)" }
           if ($r.thumbsListed -ne 2) { $bad += "thumbnails listed: $($r.thumbsListed)" }
           if (-not $r.overlayOpen[0]) { $bad += "the overlay didn't open" }
           if (-not $r.overlayOpen[1]) { $bad += "the overlay isn't excluded from capture" }

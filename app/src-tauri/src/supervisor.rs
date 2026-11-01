@@ -32,6 +32,8 @@ const CRASH_WINDOW: Duration = Duration::from_secs(120);
 
 /// Below this a recording holds only its header: the first fragment is megabytes.
 const EMPTY_RECORDING_BYTES: u64 = 16 * 1024;
+/// Long enough for the supervisor to notice, plus the wait in `finish`.
+const ENGINE_STOP_LIMIT: Duration = Duration::from_secs(6);
 
 /// Decides when a failure deserves a sound. It outlives any one engine, because a crash loop is
 /// the case it most needs to catch.
@@ -103,6 +105,7 @@ fn run(app: AppHandle) {
     loop {
         let shared = app.state::<Shared>();
         if shared.quitting.load(Ordering::Relaxed) {
+            shared.engine_stopped.store(true, Ordering::Relaxed);
             return;
         }
         let started = Instant::now();
@@ -110,6 +113,7 @@ fn run(app: AppHandle) {
             Ok(child) => {
                 let reason = watch(&app, child, &mut alarm);
                 if shared.quitting.load(Ordering::Relaxed) {
+                    shared.engine_stopped.store(true, Ordering::Relaxed);
                     return;
                 }
                 *shared.engine_stdin.lock().unwrap() = None;
@@ -305,6 +309,16 @@ fn handle(app: &AppHandle, event: Event, alarm: &mut Alarm) {
             }
             let _ = app.emit("error", message);
         }
+    }
+}
+
+/// `shutdown`, then waits until the engine has really gone, for when its exe is about to be replaced.
+pub fn stop_engine(app: &AppHandle) {
+    shutdown(app);
+    let shared = app.state::<Shared>();
+    let until = Instant::now() + ENGINE_STOP_LIMIT;
+    while Instant::now() < until && !shared.engine_stopped.load(Ordering::Relaxed) {
+        std::thread::sleep(Duration::from_millis(50));
     }
 }
 

@@ -1,6 +1,6 @@
 # Unreleased
 
-- First version.
+- Add an update button to the title bar and the tray.
 - Run the self-test in its own process, so it no longer collides with replay.
 - Add an overlay on Alt+Z with replay, recording, quick settings and recent clips.
 - Add a gallery with a built-in player, in the main window and the overlay.

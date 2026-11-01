@@ -2,7 +2,11 @@
 // it changes, so there is no Save button.
 "use strict";
 
+const ICON_UPDATE = '<svg viewBox="0 0 24 24"><path d="M19.8 12A7.8 7.8 0 1 1 17.4 6.4"/><path d="M18.3 2.8V7h-4.2"/></svg>';
+const ICON_DOWNLOAD = '<svg viewBox="0 0 24 24"><path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/></svg>';
+
 let listening = null;
+let upd = {};
 
 function renderSettings() {
   const s = view.settings;
@@ -95,12 +99,64 @@ function renderKeys() {
   $("k-rec").textContent = k.toggleRecording;
 }
 
+// Always in the title bar: a quiet icon that checks for updates, which turns into a labelled
+// button when a new version is waiting, and shows the download while it installs.
+function renderUpdate() {
+  const el = $("upd");
+  if (!upd.current) {
+    el.hidden = true;
+    return;
+  }
+  el.hidden = false;
+  let cls = "", title, html = ICON_UPDATE;
+  if (upd.progress != null) {
+    cls = "busy";
+    title = "tape restarts on its own when it's done.";
+    html = `${ICON_UPDATE}<span>Updating ${upd.progress}%</span>`;
+  } else if (upd.available) {
+    cls = "ready";
+    title = `Update to tape ${upd.available} and restart. Your settings and clips stay. Instant replay starts over.${upd.notes ? `\n\n${upd.notes}` : ""}`;
+    html = `${ICON_DOWNLOAD}<span>Update</span>`;
+  } else if (upd.checking) {
+    cls = "spin";
+    title = "Checking for updates…";
+  } else {
+    title = `Check for updates (tape ${upd.current})`;
+  }
+  el.className = `tb-upd ${cls}`;
+  el.disabled = upd.progress != null;
+  el.title = title;
+  el.setAttribute("aria-label", title);
+  el.innerHTML = html;
+}
+
+// Installs a waiting update, otherwise checks now.
+async function updateClicked() {
+  if (upd.progress != null || upd.checking) return;
+  if (upd.available) {
+    try {
+      await invoke("install_update");
+    } catch (err) {
+      toast(`Update failed: ${err}`, true);
+    }
+    return;
+  }
+  upd = { ...upd, checking: true };
+  renderUpdate();
+  upd = await invoke("check_update");
+  renderUpdate();
+  if (upd.available) toast(`tape ${upd.available} is available`);
+  else if (upd.error) toast(`Couldn't check for updates: ${upd.error}`, true);
+  else toast("tape is up to date");
+}
+
 function render() {
   if (document.activeElement?.matches?.("input[type=range]")) return; // don't move a slider in use
   renderSettings();
   renderClips();
   renderAlerts();
   renderKeys();
+  renderUpdate();
   renderStatus(view.status);
 }
 
@@ -180,6 +236,7 @@ document.addEventListener("click", async (e) => {
   switch (act) {
     case "win-min": return w.minimize();
     case "win-close": return w.close();
+    case "update": return updateClicked();
     case "clip": return invoke("save_clip");
     case "record": return invoke("toggle_recording");
     case "open-folder": return invoke("open_folder");
@@ -254,6 +311,10 @@ async function listenForKey(button, name) {
 // ---------- engine events ----------
 
 listen("status", (e) => view && renderStatus(e.payload));
+listen("update", (e) => {
+  upd = e.payload;
+  renderUpdate();
+});
 listen("changed", () => !listening && refresh());
 listen("saved", (e) => {
   toast(`Saved ${e.payload.split(/[\\/]/).pop()}`);
@@ -267,6 +328,10 @@ listen("selftest", (e) => {
 });
 
 Gallery.mount($("gallery"));
+invoke("update_state").then((state) => {
+  upd = state;
+  renderUpdate();
+});
 refresh().then(() => {
   if (!view.uiTest) return;
   const test = document.createElement("script");

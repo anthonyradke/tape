@@ -7,6 +7,7 @@ mod overlay;
 mod state;
 mod supervisor;
 mod tray;
+mod update;
 
 use std::path::Path;
 
@@ -59,6 +60,7 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_window(app)))
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec![HIDDEN_ARG])))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(hotkeys::plugin())
         .setup(move |app| {
             let handle = app.handle();
@@ -70,6 +72,7 @@ fn main() {
                 let _ = app.autolaunch().enable();
             }
             hotkeys::register(handle);
+            update::init(handle);
             tray::create(handle)?;
             supervisor::start(handle.clone());
             if !start_hidden {
@@ -89,6 +92,9 @@ fn main() {
             commands::open_log,
             commands::pick_folder,
             commands::self_test,
+            update::update_state,
+            update::check_update,
+            update::install_update,
             commands::clips,
             commands::save_thumb,
             commands::hide_overlay,

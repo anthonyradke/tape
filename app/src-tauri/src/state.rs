@@ -42,6 +42,8 @@ pub struct Shared {
     /// Recording the user asked for, carried across an engine restart.
     pub recording_wanted: AtomicBool,
     pub quitting: AtomicBool,
+    /// The supervisor has finished and no engine is running.
+    pub engine_stopped: AtomicBool,
     pub engine_generation: AtomicU32,
     pub self_test: Mutex<Option<String>>,
     pub log_path: PathBuf,
@@ -74,6 +76,7 @@ impl Shared {
             engine_stdin: Mutex::new(None),
             recording_wanted: AtomicBool::new(false),
             quitting: AtomicBool::new(false),
+            engine_stopped: AtomicBool::new(false),
             engine_generation: AtomicU32::new(0),
             self_test: Mutex::new(None),
             log_path,

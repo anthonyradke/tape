@@ -3,16 +3,16 @@ use std::sync::Mutex;
 use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Manager, Wry};
+use tauri::{AppHandle, Emitter, Manager, Wry};
 
 use crate::commands;
 use crate::state::{Light, Shared};
-use crate::supervisor;
+use crate::{supervisor, update};
 
 const TRAY_ID: &str = "tape";
 
 /// What the tray currently shows, to avoid touching it when nothing changed.
-static SHOWN: Mutex<Option<(Light, bool, bool, Option<String>)>> = Mutex::new(None);
+static SHOWN: Mutex<Option<(Light, bool, bool, Option<String>, Option<String>)>> = Mutex::new(None);
 
 fn icon(light: Light) -> tauri::Result<Image<'static>> {
     let bytes: &[u8] = match light {
@@ -36,6 +36,10 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     menu.append(&MenuItem::with_id(app, "record", label(record, &keys.toggle_recording), true, None::<&str>)?)?;
     menu.append(&CheckMenuItem::with_id(app, "replay", label("Instant replay", &keys.toggle_replay), true, settings.replay, None::<&str>)?)?;
     menu.append(&PredefinedMenuItem::separator(app)?)?;
+    if let Some(version) = update::status(app).available {
+        // Updating restarts the engine, so it waits for a recording to end.
+        menu.append(&MenuItem::with_id(app, "update", format!("Update to tape {version}"), !recording, None::<&str>)?)?;
+    }
     menu.append(&MenuItem::with_id(app, "folder", "Open clips folder", true, None::<&str>)?)?;
     menu.append(&MenuItem::with_id(app, "open", "Open tape", true, None::<&str>)?)?;
     menu.append(&MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?)?;
@@ -52,6 +56,14 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
             "clip" => commands::do_save_clip(app),
             "record" => commands::do_toggle_recording(app),
             "replay" => commands::do_toggle_replay(app),
+            "update" => {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = update::install(&app).await {
+                        let _ = app.emit("error", format!("Update failed: {e}"));
+                    }
+                });
+            }
             "folder" => commands::reveal_folder(app),
             "open" => crate::show_window(app),
             "quit" => {
@@ -75,7 +87,7 @@ pub fn refresh(app: &AppHandle) {
     let health = shared.health.lock().unwrap().clone();
     let recording = shared.status.lock().unwrap().recording;
     let replay = shared.settings.lock().unwrap().replay;
-    let now = (health.light, recording, replay, health.problem.clone());
+    let now = (health.light, recording, replay, health.problem.clone(), update::status(app).available);
     {
         let mut shown = SHOWN.lock().unwrap();
         if shown.as_ref() == Some(&now) {

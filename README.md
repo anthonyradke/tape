@@ -17,6 +17,7 @@ Status: private, in daily testing on one RTX 4070 Ti. See [Testing](#testing).
 - Global hotkeys, defaulting to the ones ShadowPlay uses (Alt+F10, Alt+F9, Alt+Shift+F10, Alt+Z).
 - An overlay over the game with replay, recording, common settings and recent clips.
 - A gallery with thumbnails and a built-in player, filtered by game.
+- Signed updates from a button in the title bar or the tray.
 - Clips sorted into a folder per game under `Videos\Tape`, using NVIDIA's file names
   (`Fortnite 2026.10.08 - 22.14.44.26.DVR.mp4`, without `.DVR` for recordings).
 - Tones for a saved clip or a failure, since a fullscreen game covers everything else.
@@ -77,6 +78,13 @@ takes its name from the window title. Everything else goes in `Desktop`.
 `tape --self-test <file> [settings.json]` runs each stage of the pipeline and writes a plain text report,
 including a check that captured frames aren't black. Settings > Run self-test starts the same command in its own
 process, because a process can only duplicate an output once and replay stays running during the test.
+
+## Releases
+
+`scripts/release.sh X.Y.Z` tests, bumps the version, builds and signs the installer, tags it, and publishes
+it with a `latest.json` to a folder on the server that Tailscale serves to the tailnet. The repository is private,
+so GitHub Releases can't serve updates to the app without a token in it. Release notes come from
+`UNRELEASED.md`.
 
 ## Build
 

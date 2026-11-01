@@ -52,6 +52,8 @@
   };
   const listeners = {};
   const emit = (name, payload) => (listeners[name] || []).forEach((f) => f({ payload }));
+  // ?update=1 has a new version waiting.
+  const upd = { current: "0.3.0", available: q.get("update") ? "0.3.1" : null, notes: q.get("update") ? "- Better things." : null, checking: false, checked: true, progress: null, error: null };
   const calls = [];
   window.__mock = { emit, calls };
   window.__TAURI__ = {
@@ -66,6 +68,16 @@
           return structuredClone(view);
         }
         if (cmd === "set_autostart") return args.enabled;
+        if (cmd === "update_state") return { ...upd };
+        if (cmd === "check_update") return { ...upd };
+        if (cmd === "install_update") {
+          if (scene === "recording") throw "Stop the recording first.";
+          for (const progress of [0, 40, 100]) {
+            await new Promise((r) => setTimeout(r, 60));
+            emit("update", { ...upd, progress });
+          }
+          return;
+        }
         if (cmd === "clips") return structuredClone(view.clips);
         if (cmd === "save_thumb") {
           const jpeg = new Blob([new Uint8Array(args.jpeg)], { type: "image/jpeg" });

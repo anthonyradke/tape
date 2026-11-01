@@ -75,7 +75,9 @@ jobs:
           $report = "$env:RUNNER_TEMP\ui-test.json"
           $env:TAPE_UI_TEST = $report
           $app = Start-Process -FilePath target\release\tape.exe -PassThru
-          if (-not $app.WaitForExit(180000)) { $app.Kill(); "::error::the UI test never finished"; exit 1 }
+          $finished = $app.WaitForExit(180000)
+          Copy-Item "$env:LOCALAPPDATA\com.anthonyradke.tape\logs\engine.log" $env:RUNNER_TEMP -ErrorAction SilentlyContinue
+          if (-not $finished) { $app.Kill(); "::error::the UI test never finished"; exit 1 }
           Get-Content $report
           $r = Get-Content $report -Raw | ConvertFrom-Json
           $bad = @()
@@ -108,3 +110,4 @@ jobs:
             ${{ runner.temp }}/self-test.txt
             ${{ runner.temp }}/tape-selftest.aac
             ${{ runner.temp }}/ui-test.json
+            ${{ runner.temp }}/engine.log

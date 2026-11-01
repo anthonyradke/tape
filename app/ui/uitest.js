@@ -7,14 +7,17 @@
 (async () => {
   const results = {};
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const nextEvent = (name, ms) =>
-    new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`no ${name} event`)), ms);
-      listen(name, (e) => {
-        clearTimeout(timer);
-        resolve(e.payload);
-      });
-    });
+  // Listening starts here, once, so an event can't slip past between two steps.
+  const saved = [];
+  const errors = [];
+  await listen("saved", (e) => saved.push(e.payload));
+  await listen("error", (e) => errors.push(e.payload));
+  async function nthSaved(n, ms) {
+    for (const start = Date.now(); saved.length < n; await sleep(50)) {
+      if (Date.now() - start > ms) throw new Error(`only ${saved.length} of ${n} saved events`);
+    }
+    return saved[n - 1];
+  }
 
   async function checkVideo(clip) {
     const out = { game: clip.game, kind: clip.kind, name: clip.name };
@@ -60,15 +63,14 @@
       view = await invoke("view");
     }
     results.replaySeconds = view.status.replaySeconds;
-    const clipSaved = nextEvent("saved", 15000);
     await invoke("save_clip");
-    results.clipPath = await clipSaved;
+    results.clipPath = await nthSaved(1, 15000);
 
     await invoke("toggle_recording");
     await sleep(3000);
-    const recordingSaved = nextEvent("saved", 15000);
+    results.recordingStatus = (await invoke("view")).status;
     await invoke("toggle_recording");
-    results.recordingPath = await recordingSaved;
+    results.recordingPath = await nthSaved(2, 15000);
 
     const clips = await invoke("clips");
     results.count = clips.length;
@@ -81,6 +83,11 @@
     results.overlayClosed = await invoke("ui_test_overlay");
   } catch (e) {
     results.failure = String(e);
+    const end = await invoke("view");
+    results.endStatus = end.status;
+    results.endHealth = end.health;
+    results.onDisk = (await invoke("clips")).map((c) => `${c.name} ${c.bytes}`);
   }
+  results.errors = errors;
   await invoke("ui_test_done", { report: JSON.stringify(results, null, 2) });
 })();

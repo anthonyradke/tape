@@ -157,6 +157,7 @@ function render() {
   renderAlerts();
   renderKeys();
   renderUpdate();
+  renderReplaySwitch();
   renderStatus(view.status);
 }
 

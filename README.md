@@ -15,7 +15,7 @@ Status: private, in daily testing on one RTX 4070 Ti. See [Testing](#testing).
   with bitrate, frame rate and quality settings that apply as soon as they change.
 - Game audio from any output device and a microphone from any input device, mixed or on separate tracks.
 - Global hotkeys, defaulting to the ones ShadowPlay uses (Alt+F10, Alt+F9, Alt+Shift+F10, Alt+Z).
-- An overlay over the game with replay, recording, common settings and recent clips.
+- A side panel over the game with replay, recording, common settings and recent clips.
 - A gallery with thumbnails and a built-in player, filtered by game.
 - Signed updates from a button in the title bar or the tray.
 - Clips sorted into a folder per game under `Videos\Tape`, using NVIDIA's file names
@@ -56,7 +56,7 @@ or power cut costs at most the last two seconds. Finishing appends a normal `moo
 headers in place, with no copying. Clips are written with `moov` first so they start immediately when
 shared.
 
-The overlay is an ordinary always-on-top window excluded from capture, not a hook into the game, so
+The overlay is an ordinary always-on-top window docked to the side of the screen and excluded from capture, not a hook into the game, so
 anti-cheat has nothing to object to and it can't appear in a clip. Games in borderless or Windows'
 default fullscreen show it directly. A game in true exclusive fullscreen drops to the desktop while it's
 open, as with Alt+Tab. Its webview is created on first use and released after five minutes hidden.

@@ -98,6 +98,7 @@ fn main() {
             commands::clips,
             commands::save_thumb,
             commands::hide_overlay,
+            commands::overlay_player,
             commands::open_main,
             commands::ui_test_overlay,
             commands::ui_test_done,

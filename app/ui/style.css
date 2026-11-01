@@ -94,6 +94,8 @@ svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width:
   border: 1px solid var(--rule-3); border-radius: 3px;
 }
 .cell { min-width: 0; padding: 8px 12px 9px; border-right: 1px solid var(--rule-2); border-bottom: 1px solid var(--rule-2); }
+.cell-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 16px; }
+.cell-head .toggle { transform: scale(.82); transform-origin: right center; }
 .cell.r-end { border-right: 0; }
 .cell.b-end { border-bottom: 0; }
 .val {
@@ -161,7 +163,7 @@ input[type="range"] { flex: 1; min-width: 0; accent-color: var(--ink-2); height:
 .seg button { height: 28px; color: var(--ink-3); font-size: 12.5px; font-weight: 500; border-right: 1px solid var(--rule-2); transition: background .12s, color .12s; }
 .seg button:last-child { border-right: 0; }
 .seg button:hover:not(:disabled) { color: var(--ink); }
-.seg button.on { background: var(--ink); color: var(--ground); font-weight: 600; }
+.seg button.on, .seg button.on:hover:not(:disabled) { background: var(--ink); color: var(--ground); font-weight: 600; }
 .toggle { position: relative; width: 34px; height: 19px; flex: none; border-radius: 10px; background: var(--rule-2); transition: background .15s; }
 .toggle::after { content: ""; position: absolute; top: 2px; left: 2px; width: 15px; height: 15px; border-radius: 50%; background: var(--ink-2); transition: transform .15s, background .15s; }
 .toggle.on { background: var(--ink); }
@@ -224,32 +226,32 @@ body[data-tab="capture"] .gallery.page, body[data-tab="gallery"] .shell { displa
 .player video[hidden] { display: none; }
 .player-note { margin: auto; max-width: 440px; padding: 16px; color: var(--ink-2); text-align: center; line-height: 1.5; }
 
-/* overlay: nothing behind the panel but the game */
-.overlay-page, html:has(.overlay-page) { background: transparent; }
-.overlay-page { position: relative; align-items: center; justify-content: center; padding: 24px; }
-.ov-dim { position: fixed; inset: 0; background: rgba(0, 0, 0, .5); }
-.ov-panel {
-  position: relative; width: min(1180px, 100%); height: min(740px, 100%); display: flex; flex-direction: column; overflow: hidden;
-  border: 1px solid var(--rule-3); border-radius: 4px; background: var(--ground); box-shadow: 0 18px 60px rgba(0, 0, 0, .55);
-}
-.ov-head { height: 44px; flex: none; display: flex; align-items: stretch; background: var(--chrome); border-bottom: 1px solid var(--rule); }
-.ov-head > .btn { align-self: center; margin-right: 6px; }
-.ov-game { align-self: center; padding-left: 14px; border-left: 1px solid var(--rule-2); color: var(--ink); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ov-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 340px minmax(0, 1fr); }
-.ov-side { min-height: 0; overflow-y: auto; padding: 14px; border-right: 1px solid var(--rule); background: var(--chrome); scrollbar-width: thin; scrollbar-color: var(--rule-3) transparent; }
-.ov-side .btn.big { padding: 0 8px; font-size: 13px; }
-.ov-side .btn.big kbd { display: none; }
-.ov-side .group { padding: 12px 0 8px; }
-.ov-side .group:last-child { padding-bottom: 0; }
-.ov-side .row { grid-template-columns: 96px minmax(0, 1fr); gap: 10px; min-height: 34px; }
-.ov-side .num { min-width: 56px; }
-.ov-side .note { margin-left: 106px; }
-.ov-body .gallery { padding: 12px 16px 0; }
+/* overlay: a side panel beside the game */
+.overlay-page { background: var(--ground); border: 1px solid var(--rule-3); }
+.ov-head { height: 40px; flex: none; display: flex; align-items: stretch; background: var(--chrome); border-bottom: 1px solid var(--rule); }
+.ov-head .wordmark { width: 72px; }
+.ov-head .tb-state { padding: 0 12px; }
+.ov-top { flex: none; padding: 12px 14px 10px; background: var(--chrome); border-bottom: 1px solid var(--rule); }
+.ov-game { margin-bottom: 8px; color: var(--ink-3); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ov-game b { color: var(--ink); font-weight: 600; }
+.ov-top .btn.big { padding: 0 8px; font-size: 13px; }
+.ov-top .btn.big kbd { display: none; }
+.ov-top .actions { margin-top: 10px; }
+.ov-tabs { margin-top: 10px; }
+.ov-pane { flex: 1; min-height: 0; overflow-y: auto; padding: 2px 14px 12px; scrollbar-width: thin; scrollbar-color: var(--rule-3) transparent; }
+.ov-pane .group { padding: 10px 0 8px; }
+.ov-pane .row { grid-template-columns: 96px minmax(0, 1fr); gap: 10px; min-height: 34px; }
+.ov-pane .num { min-width: 56px; }
+.ov-pane .note { margin-left: 106px; }
+.ov-more { padding-top: 10px; }
+.overlay-page[data-pane="settings"] #gallery, .overlay-page[data-pane="clips"] #ov-settings { display: none; }
+.overlay-page .gallery { flex: 1; padding: 10px 14px 0; }
+.overlay-page .gallery-bar { flex-wrap: wrap; gap: 8px; padding-bottom: 10px; }
+.overlay-page .gallery-bar .cap { display: none; }
+.overlay-page .game-pick { flex: 1 1 100%; min-width: 0; }
+.overlay-page .gallery-bar .seg { flex: 1; }
+.overlay-page .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 8px; }
 .overlay-page .player { inset: 0; }
-@media (max-width: 760px) {
-  .ov-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
-  .ov-side { border-right: 0; border-bottom: 1px solid var(--rule); max-height: 56vh; }
-}
 
 .toast {
   z-index: 6; position: fixed; left: 50%; bottom: 18px; transform: translate(-50%, 8px); max-width: 70%; padding: 8px 14px; border-radius: 3px;

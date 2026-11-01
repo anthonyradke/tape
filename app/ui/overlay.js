@@ -1,5 +1,5 @@
-// The panel that opens over a game. Clicking away, Esc, Alt+Tab or the hotkey all close it, and
-// nothing here is ever left covering the screen.
+// The side panel that opens over a game. Esc, the hotkey, Alt+Tab or clicking back into the game
+// all close it, and nothing here is ever left in the way.
 "use strict";
 
 // Windows can report a lost focus while a window is still being brought forward.
@@ -16,15 +16,16 @@ function render() {
       ${status.recording ? `<p class="note warn">Applies when the recording stops.</p>` : ""}
     </div>
     <div class="group"><span class="cap">Instant replay</span>
-      ${row("On", toggle("replay", s.replay, "Instant replay"))}
       ${row("Keep the last", select("replaySeconds", LENGTHS, s.replaySeconds))}
     </div>
     <div class="group"><span class="cap">Audio</span>
       ${row("Game audio", select("systemAudio", deviceOptions(p.outputs, s.systemAudio, "Off"), s.systemAudio))}
       ${row("Microphone", select("microphone", deviceOptions(p.inputs, s.microphone, "Off"), s.microphone))}
-    </div>`;
+    </div>
+    <div class="ov-more"><button class="link-btn" data-act="settings">All settings</button></div>`;
   $("k-clip").textContent = s.hotkeys.saveClip;
   $("k-rec").textContent = s.hotkeys.toggleRecording;
+  renderReplaySwitch();
   renderStatus(status);
 }
 
@@ -34,7 +35,7 @@ function renderStatus(s) {
   const state = $("tb-state");
   state.className = `tb-state ${light}`;
   state.textContent = { idle: "Off", replay: "Instant replay on", recording: "Recording", trouble: view.health.problem || "Not capturing" }[light];
-  $("ov-game").textContent = s.game;
+  $("ov-game").innerHTML = `Saving to <b>${esc(s.game || "Desktop")}</b>`;
 
   const replay = $("p-replay");
   if (!s.replayOn) {
@@ -57,6 +58,14 @@ function renderStatus(s) {
   $("b-rec-text").textContent = s.recording ? "Stop recording" : "Start recording";
 }
 
+function showPane(name) {
+  document.body.dataset.pane = name;
+  localStorage.setItem("pane", name);
+  document.querySelectorAll("[data-pane-name]").forEach((b) => b.classList.toggle("on", b.dataset.paneName === name));
+  // Only here, so opening the panel in a game doesn't start decoding thumbnails nobody asked for.
+  if (name === "clips") Gallery.load();
+}
+
 function hide() {
   Gallery.stop();
   invoke("hide_overlay");
@@ -65,13 +74,14 @@ function hide() {
 async function opened() {
   openedAt = Date.now();
   await refresh();
-  Gallery.load();
+  showPane(localStorage.getItem("pane") || "settings");
 }
 
 document.addEventListener("click", (e) => {
-  const target = e.target.closest("[data-act],[data-seg],[data-toggle]");
+  const target = e.target.closest("[data-act],[data-seg],[data-toggle],[data-pane-name]");
   if (!target) return;
-  const { act, toggle: toggleKey } = target.dataset;
+  const { act, toggle: toggleKey, paneName } = target.dataset;
+  if (paneName) return showPane(paneName);
   if (toggleKey) return save((s) => (s[toggleKey] = !s[toggleKey]));
   switch (act) {
     case "hide": return hide();
@@ -99,10 +109,10 @@ listen("error", (e) => toast(e.payload, true));
 listen("saved", (e) => {
   toast(`Saved ${e.payload.split(/[\\/]/).pop()}`);
   refresh();
-  Gallery.load();
+  if (document.body.dataset.pane === "clips") Gallery.load();
 });
 listen("overlay-shown", opened);
 listen("overlay-hidden", () => Gallery.stop());
 
-Gallery.mount($("gallery"));
+Gallery.mount($("gallery"), (open) => invoke("overlay_player", { open }));
 opened();

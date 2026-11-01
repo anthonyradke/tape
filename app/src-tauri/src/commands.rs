@@ -341,6 +341,11 @@ pub fn hide_overlay(app: AppHandle) {
     overlay::hide(&app);
 }
 
+#[tauri::command]
+pub fn overlay_player(app: AppHandle, open: bool) {
+    overlay::set_player(&app, open);
+}
+
 /// Async because making a window from a synchronous command deadlocks on Windows.
 #[tauri::command]
 pub async fn open_main(app: AppHandle) {
@@ -351,7 +356,7 @@ pub async fn open_main(app: AppHandle) {
 /// Opens or closes the overlay as the hotkey would, and says what happened. Async for the same
 /// reason as `open_main`.
 #[tauri::command]
-pub async fn ui_test_overlay(app: AppHandle) -> Option<(bool, bool)> {
+pub async fn ui_test_overlay(app: AppHandle) -> Option<(bool, bool, bool)> {
     std::env::var_os(UI_TEST)?;
     overlay::toggle(&app);
     std::thread::sleep(Duration::from_millis(1500));

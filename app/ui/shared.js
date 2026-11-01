@@ -86,6 +86,15 @@ function heightOptions() {
   return heights;
 }
 
+function renderReplaySwitch() {
+  const on = view.settings.replay;
+  const key = view.settings.hotkeys.toggleReplay;
+  const el = $("t-replay");
+  el.classList.toggle("on", on);
+  el.setAttribute("aria-checked", on);
+  el.title = `Turn instant replay ${on ? "off" : "on"}${key ? ` (${key})` : ""}`;
+}
+
 async function refresh() {
   view = await invoke("view");
   render();
@@ -131,6 +140,7 @@ const Gallery = (() => {
   const KINDS = [["all", "All"], ["clip", "Clips"], ["recording", "Recordings"]];
 
   let box = null;
+  let playerChanged = () => {};
   let clips = [];
   let game = "";
   let kind = "all";
@@ -247,6 +257,7 @@ const Gallery = (() => {
     const list = shown();
     const clip = list[index];
     if (!clip) return;
+    if (current < 0) playerChanged(true);
     current = index;
     const v = video();
     $("player-note").hidden = true;
@@ -268,6 +279,7 @@ const Gallery = (() => {
     v.pause();
     v.removeAttribute("src");
     v.load();
+    playerChanged(false);
     fillThumbs();
   }
 
@@ -277,8 +289,9 @@ const Gallery = (() => {
 
   const isOpen = () => current >= 0;
 
-  function mount(element) {
+  function mount(element, onPlayer) {
     box = element;
+    if (onPlayer) playerChanged = onPlayer;
     document.body.insertAdjacentHTML("beforeend", `<div class="player" id="player" hidden role="dialog" aria-label="Player">
       <div class="player-bar">
         <div class="player-info"><div class="player-title" id="player-title"></div><div class="player-meta" id="player-meta"></div></div>

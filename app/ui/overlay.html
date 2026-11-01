@@ -5,34 +5,32 @@
   <title>tape overlay</title>
   <link rel="stylesheet" href="style.css" />
 </head>
-<body class="overlay-page">
-  <div class="ov-dim" data-act="hide"></div>
-  <main class="ov-panel">
-    <header class="ov-head">
-      <div class="wordmark">tape</div>
-      <div class="tb-state" id="tb-state"></div>
-      <div class="ov-game" id="ov-game"></div>
-      <div class="tb-spacer"></div>
-      <button class="btn quiet small" data-act="settings">All settings</button>
-      <button class="win-btn close" data-act="hide" title="Close" aria-label="Close">
-        <svg viewBox="0 0 12 12"><path d="M1.5 1.5l9 9M10.5 1.5l-9 9" /></svg>
-      </button>
-    </header>
-    <div class="ov-body">
-      <section class="ov-side">
-        <div class="plate" style="--cols: 2">
-          <div class="cell b-end"><div class="cap">Instant replay</div><div class="val" id="p-replay"></div><div class="meter"><i id="p-replay-fill"></i></div></div>
-          <div class="cell r-end b-end"><div class="cap">Recording</div><div class="val" id="p-rec"></div><div class="sub" id="p-rec-sub"></div></div>
-        </div>
-        <div class="actions">
-          <button class="btn big" id="b-clip" data-act="clip"><span id="b-clip-text">Save clip</span><kbd id="k-clip"></kbd></button>
-          <button class="btn big quiet" id="b-rec" data-act="record"><i class="rec-dot"></i><span id="b-rec-text">Start recording</span><kbd id="k-rec"></kbd></button>
-        </div>
-        <div id="ov-settings"></div>
-      </section>
-      <section class="gallery" id="gallery" aria-label="Gallery"></section>
+<body class="overlay-page" data-pane="settings">
+  <header class="ov-head">
+    <div class="wordmark">tape</div>
+    <div class="tb-state" id="tb-state"></div>
+    <div class="tb-spacer"></div>
+    <button class="win-btn close" data-act="hide" title="Close" aria-label="Close">
+      <svg viewBox="0 0 12 12"><path d="M1.5 1.5l9 9M10.5 1.5l-9 9" /></svg>
+    </button>
+  </header>
+  <section class="ov-top">
+    <div class="ov-game" id="ov-game"></div>
+    <div class="plate" style="--cols: 2">
+      <div class="cell b-end"><div class="cell-head"><div class="cap">Instant replay</div><button class="toggle" id="t-replay" data-toggle="replay" role="switch" aria-label="Instant replay"></button></div><div class="val" id="p-replay"></div><div class="meter"><i id="p-replay-fill"></i></div></div>
+      <div class="cell r-end b-end"><div class="cell-head"><div class="cap">Recording</div></div><div class="val" id="p-rec"></div><div class="sub" id="p-rec-sub"></div></div>
     </div>
-  </main>
+    <div class="actions">
+      <button class="btn big" id="b-clip" data-act="clip"><span id="b-clip-text">Save clip</span><kbd id="k-clip"></kbd></button>
+      <button class="btn big quiet" id="b-rec" data-act="record"><i class="rec-dot"></i><span id="b-rec-text">Start recording</span><kbd id="k-rec"></kbd></button>
+    </div>
+    <div class="seg ov-tabs">
+      <button data-pane-name="settings">Settings</button>
+      <button data-pane-name="clips">Clips</button>
+    </div>
+  </section>
+  <section class="ov-pane" id="ov-settings"></section>
+  <section class="gallery" id="gallery" aria-label="Clips"></section>
   <div id="toast" class="toast" role="status"></div>
   <script src="shared.js"></script>
   <script src="overlay.js"></script>

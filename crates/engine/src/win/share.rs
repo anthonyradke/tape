@@ -169,7 +169,11 @@ fn convert(input: &Path, output: &Path, mode: Mode, progress: &mut dyn FnMut(f64
         if let Some(manager) = &manager {
             sink.SetUnknown(&MF_SINK_WRITER_D3D_MANAGER, manager).map_err(text)?;
         }
-        let writer = MFCreateSinkWriterFromURL(&HSTRING::from(output.as_os_str()), None, &sink).map_err(|e| format!("can't write the copy: {e}"))?;
+        // Opened here for reading as well: moving the index to the front reads the file back, which
+        // a writer that opens the path itself can't, and Finalize fails with access denied.
+        let file = MFCreateFile(MF_ACCESSMODE_READWRITE, MF_OPENMODE_DELETE_IF_EXIST, MF_FILEFLAGS_NONE, &HSTRING::from(output.as_os_str()))
+            .map_err(|e| format!("can't write the copy: {e}"))?;
+        let writer = MFCreateSinkWriterFromURL(&HSTRING::from(output.as_os_str()), &file, &sink).map_err(|e| format!("can't write the copy: {e}"))?;
 
         let encoded = video_type(&MFVideoFormat_H264, &target).map_err(text)?;
         encoded.SetUINT32(&MF_MT_AVG_BITRATE, target.bitrate).map_err(text)?;
@@ -252,6 +256,7 @@ fn convert(input: &Path, output: &Path, mode: Mode, progress: &mut dyn FnMut(f64
             }
         }
         writer.Finalize().map_err(|e| format!("couldn't finish the copy: {e}"))?;
+        let _ = file.Close();
         Ok((target.width, target.height, duration as f64 / HUNDRED_NS))
     }
 }

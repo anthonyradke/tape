@@ -3797,7 +3797,7 @@ dependencies = [
 
 [[package]]
 name = "tape"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -3824,7 +3824,7 @@ dependencies = [
 
 [[package]]
 name = "tape-engine"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "chrono",
  "nvenc",

@@ -1,4 +1,4 @@
-"""Draws the app and tray icons with no dependencies: a cassette on a graphite tile.
+"""Draws the app and tray icons with no dependencies: a graphite tile with two tape reels.
 
 Usage: python3 scripts/make_icons.py
 Then:  cd app/src-tauri && cargo tauri icon icons/app-icon.png
@@ -47,25 +47,20 @@ def render(size, shapes):
 
 TILE, INK = (20, 21, 23), (236, 232, 223)
 
-def box(x, y, half_w, half_h, radius):
-    dx, dy = max(abs(x) - (half_w - radius), 0), max(abs(y) - (half_h - radius), 0)
-    return math.hypot(dx, dy) <= radius
-
-def cassette(ink, cut, scale):
-    """Body, one window across it and the two reels showing through. `cut` is drawn over the body,
-    so None leaves a real hole, which is what a tray icon needs."""
-    w, h, corner = .94 * scale, .64 * scale, .13 * scale
-    win_w, win_h, win_y, win_corner = .70 * scale, .25 * scale, -.03 * scale, .25 * scale
-    reel_x, reel = .425 * scale, .145 * scale
-    return [
-        (lambda x, y: box(x, y, w, h, corner), ink),
-        (lambda x, y: box(x, y - win_y, win_w, win_h, win_corner), cut),
-        (lambda x, y: math.hypot(x + reel_x, y - win_y) <= reel, ink),
-        (lambda x, y: math.hypot(x - reel_x, y - win_y) <= reel, ink),
-    ]
+def reels(ring, hub=None, big=False):
+    """Two reels joined by the tape running under them."""
+    x0, y0, r = (.36, -.08, .27) if big else (.46, -.10, .36)
+    t = .075 if big else .13
+    hub = hub or ring
+    def ring_at(cx):
+        return lambda x, y: abs(math.hypot(x - cx, y - y0) - r) <= t
+    def hub_at(cx):
+        return lambda x, y: math.hypot(x - cx, y - y0) <= t * 1.15
+    base = lambda x, y: abs(y - (y0 + r + (.0 if big else .0))) <= t and abs(x) <= x0
+    return [(ring_at(-x0), ring), (ring_at(x0), ring), (hub_at(-x0), hub), (hub_at(x0), hub), (base, ring)]
 
 os.makedirs(OUT, exist_ok=True)
 tile = (lambda x, y: rounded(x, y, 1, .44) <= 0, TILE)
-png(os.path.join(OUT, "app-icon.png"), 1024, render(1024, [tile] + cassette(INK, TILE, .78)))
+png(os.path.join(OUT, "app-icon.png"), 1024, render(1024, [tile] + reels(INK, big=True)))
 for name, color in (("idle", (143, 140, 133)), ("replay", (76, 201, 111)), ("recording", (239, 75, 75)), ("trouble", (232, 185, 49))):
-    png(os.path.join(OUT, f"tray-{name}.png"), 64, render(64, cassette(color, None, 1.0)))
+    png(os.path.join(OUT, f"tray-{name}.png"), 64, render(64, reels(color)))

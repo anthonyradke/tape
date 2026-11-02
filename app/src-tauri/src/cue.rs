@@ -12,20 +12,38 @@ pub enum Cue {
 const RATE: u32 = 44_100;
 const VOLUME: f32 = 0.16;
 
-/// (frequency, milliseconds) pairs, played in turn. Frequency 0 is a rest.
-fn notes(cue: Cue) -> &'static [(f32, u32)] {
-    match cue {
-        Cue::ClipSaved => &[(880.0, 55), (1320.0, 80)],
-        Cue::RecordingStarted => &[(660.0, 90)],
-        Cue::RecordingStopped => &[(440.0, 90)],
-        Cue::Failed => &[(196.0, 140), (0.0, 60), (196.0, 140)],
-    }
+/// The clip cue plays over every save, usually in headphones, so it's two low plucked notes that
+/// ease in and ring out rather than a beep.
+fn chime() -> Vec<i16> {
+    const STRIKES: [(f32, f32); 2] = [(523.25, 0.0), (659.25, 0.11)]; // C5, E5: (hertz, start second)
+    const ATTACK: f32 = 0.012;
+    const RING: f32 = 0.4;
+    const LEVEL: f32 = 0.09;
+    let count = ((0.11 + RING) * RATE as f32) as u32;
+    (0..count)
+        .map(|n| {
+            let now = n as f32 / RATE as f32;
+            let mix: f32 = STRIKES
+                .iter()
+                .filter(|&&(_, start)| now >= start && now < start + RING)
+                .map(|&(frequency, start)| {
+                    let t = now - start;
+                    let rise = (t / ATTACK).min(1.0);
+                    let fall = (1.0 - t / RING).powi(3);
+                    // A trace of the octave gives it some body without adding any edge.
+                    let phase = t * frequency * std::f32::consts::TAU;
+                    (phase.sin() + 0.12 * (phase * 2.0).sin()) * rise * rise * fall
+                })
+                .sum();
+            (mix * LEVEL * 32767.0) as i16
+        })
+        .collect()
 }
 
-/// A complete 16-bit mono WAV file in memory.
-fn wav(cue: Cue) -> Vec<u8> {
+/// (frequency, milliseconds) pairs, played in turn. Frequency 0 is a rest.
+fn tones(notes: &[(f32, u32)]) -> Vec<i16> {
     let mut samples: Vec<i16> = Vec::new();
-    for &(frequency, ms) in notes(cue) {
+    for &(frequency, ms) in notes {
         let count = RATE * ms / 1000;
         for n in 0..count {
             let t = n as f32 / RATE as f32;
@@ -35,6 +53,17 @@ fn wav(cue: Cue) -> Vec<u8> {
             samples.push(if frequency == 0.0 { 0 } else { (value * 32767.0) as i16 });
         }
     }
+    samples
+}
+
+/// A complete 16-bit mono WAV file in memory.
+fn wav(cue: Cue) -> Vec<u8> {
+    let samples = match cue {
+        Cue::ClipSaved => chime(),
+        Cue::RecordingStarted => tones(&[(660.0, 90)]),
+        Cue::RecordingStopped => tones(&[(440.0, 90)]),
+        Cue::Failed => tones(&[(196.0, 140), (0.0, 60), (196.0, 140)]),
+    };
     let data = samples.len() as u32 * 2;
     let mut out = Vec::with_capacity(44 + data as usize);
     out.extend_from_slice(b"RIFF");

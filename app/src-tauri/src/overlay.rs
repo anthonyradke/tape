@@ -51,6 +51,8 @@ fn build(app: &AppHandle) -> Option<WebviewWindow> {
         .skip_taskbar(true)
         .always_on_top(true)
         .focusable(false)
+        // Otherwise WebView2 pulls the focus in once it has loaded, which activates the window.
+        .focused(false)
         .content_protected(true)
         .visible(false)
         .build()

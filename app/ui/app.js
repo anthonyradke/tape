@@ -56,6 +56,8 @@ function renderSettings() {
     ${row("Save to", `<div class="path" title="${esc(view.folder)}">${esc(view.folder)}</div><button class="btn quiet small" data-act="pick-folder">Change</button>`)}
   </div>`);
 
+  html.push(renderSharing());
+
   html.push(`<div class="group"><span class="cap">General</span>
     ${row("Start with Windows", toggle("autostart", view.autostart, "Start with Windows"))}
     ${row("Sounds", toggle("sounds", s.sounds, "Sounds"))}
@@ -70,6 +72,32 @@ function renderSettings() {
   const top = scroller.scrollTop;
   scroller.innerHTML = html.join("");
   scroller.scrollTop = top;
+}
+
+function renderSharing() {
+  const s = view.settings;
+  const u = Cloud.usage();
+  const ready = s.shareServer && s.shareKey;
+  const storage = !ready ? "" : u
+    ? row("Cloud storage", `<button class="cloud-chip" data-act="links">${Cloud.ring(u, 22, false)}<span>${bytes(u.used)} of ${bytes(u.free)}</span></button><button class="link-btn" data-act="links">Manage links</button>`)
+    : row("Cloud storage", `<span class="dim-text">Not reached yet</span><button class="link-btn" data-act="links-retry">Try again</button>`);
+  return `<div class="group"><span class="cap">Sharing</span>
+    ${row("Share server", `<input type="text" class="text" data-key="shareServer" value="${esc(s.shareServer)}" placeholder="https://tape-clips.example.workers.dev" spellcheck="false" aria-label="Share server">`)}
+    ${row("Upload key", `<input type="password" class="text" data-key="shareKey" value="${esc(s.shareKey)}" placeholder="From your share server" aria-label="Upload key">`)}
+    ${storage}
+    <p class="note">Copy link uploads a smaller 1080p copy to your own Cloudflare server. ${u ? `Links work for ${u.linkDays} days, then delete themselves.` : "Links delete themselves after a few days."} Setting one up: share/README.md in tape's repository.</p>
+  </div>`;
+}
+
+function renderLinks() {
+  const box = $("links-body");
+  if (!box || $("links").hidden) return;
+  const u = Cloud.usage();
+  if (!u) {
+    box.innerHTML = `<div class="empty">${view.settings.shareServer ? "Couldn't reach the share server." : "Sharing isn't set up. Add a share server and upload key in Settings."}</div>`;
+    return;
+  }
+  box.innerHTML = `<div class="links-top">${Cloud.ring(u, 112)}${Cloud.bars(u)}</div><div class="links-list">${Cloud.linkRows(u)}</div>`;
 }
 
 function renderClips() {
@@ -90,6 +118,10 @@ function renderAlerts() {
   if (h.problem) out.push(`<div class="alert"><b>${esc(h.problem)}</b>${h.light === "trouble" ? " tape keeps retrying on its own." : ""}</div>`);
   if (view.probe.nvencError) out.push(`<div class="alert"><b>Can't use the GPU encoder.</b> ${esc(view.probe.nvencError)}</div>`);
   if (view.overlayRunning) out.push(`<div class="alert"><b>The NVIDIA overlay is running.</b> Turn it off in the NVIDIA app so it stops recording in the background and lets go of the same hotkeys, Alt+Z included.</div>`);
+  const u = Cloud.usage();
+  if (u && u.used / u.free >= 0.8) {
+    out.push(`<div class="alert"><b>Cloud storage is ${Math.round((u.used / u.free) * 100)}% full.</b> ${bytes(u.used)} of the free ${bytes(u.free)}. ${u.used >= u.cap ? "New links are refused until some expire or you delete them." : "Delete links you're done with to make room."} <button class="link-btn" data-act="links">Manage links</button></div>`);
+  }
   if (h.engineRestarts > 0) out.push(`<div class="alert">Recovered ${h.engineRestarts === 1 ? "once" : `${h.engineRestarts} times`} since starting. Last: ${esc(h.lastRestart || "unknown")}.</div>`);
   $("alerts").innerHTML = out.join("");
 }
@@ -152,7 +184,8 @@ async function updateClicked() {
 }
 
 function render() {
-  if (document.activeElement?.matches?.("input[type=range]")) return; // don't move a slider in use
+  // Don't move a slider in use or retype a field being typed in.
+  if (document.activeElement?.matches?.("input[type=range], input.text")) return;
   renderSettings();
   renderClips();
   renderAlerts();
@@ -252,6 +285,15 @@ document.addEventListener("click", async (e) => {
       $("report-text").textContent = "Running. This takes about 20 seconds, and replay keeps running.";
       $("report").hidden = false;
       return invoke("self_test");
+    case "links":
+      $("links").hidden = false;
+      renderLinks();
+      return Cloud.load(true);
+    case "links-retry":
+      return Cloud.load(true);
+    case "close-links":
+      $("links").hidden = true;
+      return;
     case "close-report":
       $("report").hidden = true;
       return;
@@ -329,7 +371,15 @@ listen("selftest", (e) => {
   $("report").hidden = false;
 });
 
+Cloud.onChange(() => {
+  if (!view) return;
+  renderLinks();
+  renderAlerts();
+  if (!document.activeElement?.matches?.("input[type=range], input.text")) renderSettings();
+});
+
 Gallery.mount($("gallery"));
+Cloud.load(false);
 invoke("update_state").then((state) => {
   upd = state;
   renderUpdate();

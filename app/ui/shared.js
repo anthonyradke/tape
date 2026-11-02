@@ -146,6 +146,149 @@ document.addEventListener("change", (e) => {
   save((s) => (s[key] = Number(e.target.value)));
 });
 
+// ---------- shared links ----------
+
+// The share server's storage against R2's free allowance, the links on it, and clips on their way
+// up. Warns once on crossing each level, so a nearly full bucket is never a surprise.
+const Cloud = (() => {
+  const WARN = 0.8;
+  const FULL = 0.95;
+  let usage = null; // null until known, or while sharing isn't set up
+  const jobs = new Map(); // path -> { stage, progress }
+  let changed = () => {};
+
+  const level = (u) => (u ? u.used / u.free : 0);
+  const tone = (u) => (level(u) >= FULL ? "bad" : level(u) >= WARN ? "warn" : "");
+
+  function left(ms) {
+    const hours = Math.max(0, Math.round((ms - Date.now()) / 3600000));
+    if (hours < 1) return "under an hour";
+    if (hours < 48) return `${hours} h`;
+    return `${Math.round(hours / 24)} days`;
+  }
+
+  // Apple Watch style: a thick round-capped arc on a dim track, the number in the middle.
+  function ring(u, size, label = true) {
+    const stroke = Math.max(3, Math.round(size / 9));
+    const r = (size - stroke) / 2;
+    const round = 2 * Math.PI * r;
+    const f = Math.min(1, level(u));
+    const arc = f > 0 ? `<circle class="ring-arc" cx="${size / 2}" cy="${size / 2}" r="${r}" stroke-width="${stroke}" stroke-dasharray="${Math.max(0.01, f * round)} ${round}" transform="rotate(-90 ${size / 2} ${size / 2})"/>` : "";
+    const middle = label && u ? `<span class="ring-mid"><b>${Math.round(f * 100)}%</b><small>used</small></span>` : "";
+    return `<span class="ring ${tone(u)}" style="width:${size}px;height:${size}px"><svg viewBox="0 0 ${size} ${size}" style="width:${size}px;height:${size}px"><circle class="ring-track" cx="${size / 2}" cy="${size / 2}" r="${r}" stroke-width="${stroke}"/>${arc}</svg>${middle}</span>`;
+  }
+
+  // T3-style limit rows: what's used, a thin bar, and when it next eases off.
+  function bars(u) {
+    const f = Math.min(1, level(u));
+    const next = [...u.clips].sort((a, b) => a.expires - b.expires)[0];
+    const capNote = `Uploads stop at ${bytes(u.cap)}, so the free plan is never exceeded.`;
+    return `<div class="limit">
+        <div class="limit-head"><span>Storage</span><span>${bytes(u.used)} of ${bytes(u.free)}</span></div>
+        <div class="limit-bar ${tone(u)}"><i style="width:${(f * 100).toFixed(1)}%"></i><b style="left:${((u.cap / u.free) * 100).toFixed(1)}%"></b></div>
+        <div class="limit-sub">${u.clips.length ? `${u.clips.length} link${u.clips.length === 1 ? "" : "s"} live. Next expires in ${left(next.expires)}, freeing ${bytes(next.bytes)}.` : "No live links."} ${capNote}</div>
+      </div>`;
+  }
+
+  function linkRows(u) {
+    if (!u.clips.length) return `<div class="empty">Nothing shared right now. Links last ${u.linkDays} days.</div>`;
+    return u.clips
+      .map((l) => `<div class="link-row">
+          <div class="link-info"><div class="link-name" title="${esc(l.name)}">${esc(l.name.replace(/\.(DVR\.)?mp4$/i, ""))}</div>
+          <div class="link-meta">${bytes(l.bytes)} · expires in ${left(l.expires)}</div></div>
+          <button class="btn quiet small" data-link-copy="${esc(l.url)}">Copy link</button>
+          <button class="btn quiet small" data-link-delete="${esc(l.id)}">Delete</button>
+        </div>`)
+      .join("");
+  }
+
+  // Crossing up into a level says so once; dropping back resets it.
+  function warn(u) {
+    const now = level(u) >= FULL ? 2 : level(u) >= WARN ? 1 : 0;
+    const before = Number(localStorage.getItem("cloudWarned") || 0);
+    localStorage.setItem("cloudWarned", now);
+    if (now > before) {
+      toast(now === 2 ? `Cloud storage is ${Math.round(level(u) * 100)}% full. New links are refused near the limit; delete some or let them expire.` : `Cloud storage is ${Math.round(level(u) * 100)}% full.`, now === 2);
+    }
+  }
+
+  function set(u) {
+    usage = u;
+    if (u) warn(u);
+    changed();
+  }
+
+  async function load(fresh) {
+    try {
+      set(await invoke("share_usage", { fresh: !!fresh }));
+    } catch (err) {
+      if (fresh) toast(String(err), true);
+    }
+  }
+
+  const linkFor = (key) => usage?.clips.find((l) => l.source === key && l.expires > Date.now());
+
+  // Converts, uploads and copies, or copies the live link it already has.
+  async function share(clip) {
+    if (jobs.has(clip.path)) return invoke("cancel_share");
+    jobs.set(clip.path, { stage: "converting", progress: 0 });
+    changed();
+    try {
+      const url = await invoke("share_clip", { path: clip.path });
+      toast(`Link copied: ${url}`);
+    } catch (err) {
+      if (String(err) !== "Cancelled.") toast(String(err), true);
+    } finally {
+      jobs.delete(clip.path);
+      changed();
+    }
+  }
+
+  // What the player's button says for a clip.
+  function label(clip) {
+    const job = jobs.get(clip.path);
+    if (job) return `${job.stage === "uploading" ? "Uploading" : "Converting"} ${Math.round(job.progress * 100)}% · Cancel`;
+    return linkFor(clip.key) ? "Copy link again" : "Copy link";
+  }
+
+  function onChange(f) {
+    const previous = changed;
+    changed = () => {
+      previous();
+      f();
+    };
+  }
+
+  document.addEventListener("click", async (e) => {
+    const copy = e.target.closest("[data-link-copy]");
+    if (copy) {
+      await invoke("copy_text", { text: copy.dataset.linkCopy });
+      return toast("Link copied");
+    }
+    const del = e.target.closest("[data-link-delete]");
+    if (del) {
+      del.disabled = true;
+      try {
+        set(await invoke("unshare", { id: del.dataset.linkDelete }));
+        toast("Link deleted");
+      } catch (err) {
+        del.disabled = false;
+        toast(String(err), true);
+      }
+    }
+  });
+
+  listen("share", (e) => {
+    const job = e.payload;
+    if (job.stage === "converting" || job.stage === "uploading") jobs.set(job.path, job);
+    changed();
+  });
+  listen("share-usage", (e) => set(e.payload));
+  invoke("share_jobs").then((list) => list.forEach((j) => jobs.set(j.path, j)));
+
+  return { load, ring, bars, linkRows, linkFor, share, label, onChange, left, usage: () => usage, tone };
+})();
+
 // ---------- gallery ----------
 
 const Gallery = (() => {
@@ -172,13 +315,25 @@ const Gallery = (() => {
     return [["", `All games (${clips.length})`], ...names.map((n) => [n, `${n} (${counts.get(n)})`])];
   }
 
+  function linkBadge(c) {
+    const link = Cloud.linkFor(c.key);
+    return link ? `<span class="shared" title="Shared. The link works for ${Cloud.left(link.expires)} more.">Link · ${Cloud.left(link.expires)}</span>` : "";
+  }
+
   const card = (c) => `<button class="card" data-play="${esc(c.path)}" title="${esc(c.name)}">
       <span class="thumb">${c.thumb ? `<img src="${esc(convertFileSrc(c.thumb))}" alt="" loading="lazy">` : ""}
         ${c.seconds != null ? `<span class="length">${clock(c.seconds)}</span>` : ""}
-        ${c.kind === "recording" ? `<span class="kind">Recording</span>` : ""}</span>
+        ${c.kind === "recording" ? `<span class="kind">Recording</span>` : ""}
+        ${linkBadge(c)}</span>
       <span class="title">${esc(c.game)}</span>
       <span class="meta">${when(c.modified)} · ${bytes(c.bytes)}</span>
     </button>`;
+
+  function cloudChip() {
+    const u = Cloud.usage();
+    if (!u) return "";
+    return `<button class="cloud-chip ${Cloud.tone(u)}" data-act="links" title="Cloud storage for shared links: ${bytes(u.used)} of the free ${bytes(u.free)}">${Cloud.ring(u, 18, false)}<span>${bytes(u.used)} / ${bytes(u.free)}</span></button>`;
+  }
 
   function renderList() {
     if (!box) return;
@@ -186,6 +341,7 @@ const Gallery = (() => {
     const empty = clips.length ? "Nothing here matches." : "Nothing saved yet. Clips show up here as soon as you save them.";
     box.innerHTML = `<div class="gallery-bar">
         <div class="cap">Gallery</div>
+        ${cloudChip()}
         <select class="game-pick" aria-label="Game">${gameOptions().map(([v, label]) => `<option value="${esc(v)}" ${v === game ? "selected" : ""}>${esc(label)}</option>`).join("")}</select>
         <div class="seg">${KINDS.map(([v, label]) => `<button data-kind="${v}" class="${v === kind ? "on" : ""}">${label}</button>`).join("")}</div>
       </div>
@@ -281,10 +437,33 @@ const Gallery = (() => {
     v.play().catch(() => {});
     $("player-title").textContent = clip.game;
     $("player-meta").textContent = `${clip.name} · ${when(clip.modified)} · ${bytes(clip.bytes)}`;
+    renderShare();
     $("player-prev").disabled = index === 0;
     $("player-next").disabled = index === list.length - 1;
     player().hidden = false;
   }
+
+  function renderShare() {
+    const clip = shown()[current];
+    const button = $("player-share");
+    if (!clip || !button) return;
+    button.textContent = Cloud.label(clip);
+    button.title = Cloud.linkFor(clip.key) ? "Already shared: copies the same link" : "Uploads a smaller copy and copies a link that works for a few days";
+  }
+
+  Cloud.onChange(() => {
+    renderShare();
+    const chip = box?.querySelector(".cloud-chip");
+    if (chip) chip.outerHTML = cloudChip() || "<span></span>";
+    else if (box && Cloud.usage()) box.querySelector(".gallery-bar .cap")?.insertAdjacentHTML("afterend", cloudChip());
+    // Badges only; a full redraw would restart thumbnails that are loading.
+    if (box) for (const el of box.querySelectorAll(".card")) {
+      const c = clips.find((x) => x.path === el.dataset.play);
+      const thumb = el.querySelector(".thumb");
+      thumb?.querySelector(".shared")?.remove();
+      if (c && thumb) thumb.insertAdjacentHTML("beforeend", linkBadge(c));
+    }
+  });
 
   function stop() {
     if (current < 0) return;
@@ -312,6 +491,7 @@ const Gallery = (() => {
         <div class="player-info"><div class="player-title" id="player-title"></div><div class="player-meta" id="player-meta"></div></div>
         <button class="btn quiet small" id="player-prev" data-player="prev">Newer</button>
         <button class="btn quiet small" id="player-next" data-player="next">Older</button>
+        <button class="btn small" id="player-share" data-player="share">Copy link</button>
         <button class="btn quiet small" data-player="reveal">Show in folder</button>
         <button class="btn quiet small" data-player="external">Open with default app</button>
         <button class="btn small" data-player="close">Close</button>
@@ -351,6 +531,7 @@ const Gallery = (() => {
       case "close": return stop();
       case "reveal": return clip && invoke("reveal_file", { path: clip.path });
       case "external": return clip && invoke("open_file", { path: clip.path });
+      case "share": return clip && Cloud.share(clip);
     }
   });
 

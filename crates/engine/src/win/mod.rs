@@ -8,6 +8,7 @@ mod cursor;
 mod encoder;
 mod gfx;
 mod selftest;
+pub mod share;
 mod video;
 mod wasapi;
 

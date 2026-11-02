@@ -3799,6 +3799,8 @@ dependencies = [
 name = "tape"
 version = "0.4.2"
 dependencies = [
+ "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "tape-core",

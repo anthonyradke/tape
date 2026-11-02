@@ -4,6 +4,7 @@ mod commands;
 mod cue;
 mod hotkeys;
 mod overlay;
+mod share;
 mod state;
 mod supervisor;
 mod tray;
@@ -53,6 +54,13 @@ fn main() {
             let settings = args.get(3).map(Path::new);
             std::process::exit(tape_engine::self_test(Path::new(path), settings));
         }
+        Some("--share-copy") => {
+            let (Some(input), Some(output)) = (args.get(2), args.get(3)) else { std::process::exit(2) };
+            if let Some(log) = args.get(4) {
+                tape_engine::log::init(Path::new(log));
+            }
+            std::process::exit(tape_engine::share_copy(Path::new(input), Path::new(output)));
+        }
         _ => {}
     }
     let start_hidden = args.iter().any(|a| a == HIDDEN_ARG);
@@ -66,6 +74,7 @@ fn main() {
             let handle = app.handle();
             let (shared, first_run) = state::Shared::load(handle);
             app.manage(shared);
+            app.manage(share::Shares::default());
             commands::allow_media(handle);
             if first_run {
                 // Replay is only useful if it's already running when something happens.
@@ -105,6 +114,12 @@ fn main() {
             commands::set_autostart,
             commands::pause_hotkeys,
             commands::resume_hotkeys,
+            share::share_clip,
+            share::cancel_share,
+            share::share_jobs,
+            share::share_usage,
+            share::unshare,
+            share::copy_text,
         ])
         .build(tauri::generate_context!())
         .expect("failed to start")

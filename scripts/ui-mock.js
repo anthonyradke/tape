@@ -7,6 +7,7 @@
     folder: "", monitor: "", resolution: 0, fps: 60, codec: "h264", bitrateMbps: 50, preset: "balanced", capture: "auto",
     showCursor: true, replay: scene !== "off", replaySeconds: 120, systemAudio: "default", microphone: scene === "replay" ? "" : "mic-1",
     systemVolume: 100, micVolume: 100, separateTracks: false,
+    shareServer: q.get("cloud") === "off" ? "" : "https://tape-clips.example.workers.dev", shareKey: q.get("cloud") === "off" ? "" : "not-a-real-key",
     hotkeys: { saveClip: "Alt+F10", toggleRecording: "Alt+F9", toggleReplay: "Alt+Shift+F10", overlay: "Alt+Z" }, sounds: true,
   };
   const recording = scene === "recording";
@@ -51,7 +52,13 @@
     ],
     autostart: true, overlayRunning: scene === "conflict", replayRam: 1.13e9, version: "0.2.0", logPath: "", selfTest: null, uiTest: false,
   };
+  // ?cloud=0.85 fills the share server's storage that far; ?cloud=off leaves sharing unset.
+  const full = Number(q.get("cloud") || 0.18);
+  const link = (c, days, bytes) => ({ id: c.key.slice(0, 10), url: `https://tape-clips.example.workers.dev/${c.key.slice(0, 10)}`, name: c.name, source: c.key, bytes, seconds: 120, uploaded: now - (7 - days) * 864e5, expires: now + days * 864e5 });
+  const usage = { used: 0, free: 1e10, cap: 9.5e9, linkDays: 7, clips: view.clips.length ? [link(view.clips[0], 6.8, 92e6), link(view.clips[2], 3.2, 140e6), link(view.clips[5], 0.4, 75e6)] : [] };
+  usage.used = Math.max(full * 1e10, usage.clips.reduce((a, l) => a + l.bytes, 0));
   const listeners = {};
+
   const emit = (name, payload) => (listeners[name] || []).forEach((f) => f({ payload }));
   // ?update=1 has a new version waiting.
   const upd = { current: "0.3.0", available: q.get("update") ? "0.3.1" : null, notes: q.get("update") ? "- Better things." : null, checking: false, checked: true, progress: null, error: null };
@@ -85,6 +92,27 @@
           const thumb = URL.createObjectURL(jpeg);
           Object.assign(view.clips.find((c) => c.key === args.key), { thumb, seconds: args.seconds });
           return thumb;
+        }
+        if (cmd === "share_usage") return settings.shareServer ? structuredClone(usage) : null;
+        if (cmd === "share_jobs") return [];
+        if (cmd === "copy_text" || cmd === "cancel_share") return;
+        if (cmd === "unshare") {
+          const gone = usage.clips.find((l) => l.id === args.id);
+          usage.clips = usage.clips.filter((l) => l !== gone);
+          usage.used -= gone ? gone.bytes : 0;
+          return structuredClone(usage);
+        }
+        if (cmd === "share_clip") {
+          const c = view.clips.find((x) => x.path === args.path);
+          for (const [stage, progress] of [["converting", 0.3], ["converting", 0.9], ["uploading", 0.5], ["uploading", 1]]) {
+            await new Promise((r) => setTimeout(r, 250));
+            emit("share", { path: args.path, stage, progress });
+          }
+          const l = link(c, 7, 80e6);
+          usage.clips.unshift(l);
+          usage.used += l.bytes;
+          emit("share-usage", structuredClone(usage));
+          return l.url;
         }
         if (cmd === "save_clip") return emit("saved", "C:\\Users\\me\\Videos\\Tape\\Counter-Strike 2\\Counter-Strike 2 2026.11.01 - 21.30.00.11.DVR.mp4");
         if (cmd === "self_test") return setTimeout(() => emit("selftest", "tape 0.1.0 self-test\nWindows 10.0.26100\n\nCapture\n  Desktop Duplication: OK"), 300);

@@ -71,6 +71,10 @@ pub struct Settings {
     pub separate_tracks: bool,
     pub hotkeys: Hotkeys,
     pub sounds: bool,
+    /// Address of the share server behind "Copy link", empty until set up. See share/README.md.
+    pub share_server: String,
+    /// Its upload key, which lets this app upload and delete links.
+    pub share_key: String,
 }
 
 impl Default for Settings {
@@ -94,6 +98,8 @@ impl Default for Settings {
             separate_tracks: false,
             hotkeys: Hotkeys::default(),
             sounds: true,
+            share_server: String::new(),
+            share_key: String::new(),
         }
     }
 }
@@ -114,6 +120,8 @@ impl Settings {
         if self.resolution != 0 {
             self.resolution = self.resolution.clamp(144, 4320);
         }
+        self.share_server = self.share_server.trim().trim_end_matches('/').to_string();
+        self.share_key = self.share_key.trim().to_string();
         self
     }
 

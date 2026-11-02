@@ -12,4 +12,5 @@ pub mod packet;
 pub mod record;
 pub mod ring;
 pub mod settings;
+pub mod share;
 pub mod sink;

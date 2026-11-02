@@ -52,3 +52,43 @@ pub fn self_test(path: &std::path::Path, settings: Option<&std::path::Path>) -> 
         }
     }
 }
+
+/// Entry point for `tape --share-copy <clip> <out.mp4>`, which makes the copy a shared link
+/// uploads. A process of its own for the same reason as the engine: it drives the GPU's decoder
+/// and encoder, and a driver crash there mustn't take the app down. Reports JSON lines on
+/// stdout: `{"progress":0.5}`, then `{"done":{...}}` or `{"error":"..."}`.
+pub fn share_copy(input: &std::path::Path, output: &std::path::Path) -> i32 {
+    use std::io::Write;
+    let emit = |value: serde_json::Value| {
+        let mut out = std::io::stdout().lock();
+        let _ = writeln!(out, "{value}");
+        let _ = out.flush();
+    };
+    let mut progress = |p: f64| emit(serde_json::json!({ "progress": p }));
+    match copy_for_sharing(input, output, &mut progress) {
+        Ok((width, height, seconds, path)) => {
+            log::line(&format!("share copy of {} done by {path}: {width}x{height}, {seconds:.1} s", input.display()));
+            emit(serde_json::json!({ "done": { "width": width, "height": height, "seconds": seconds } }));
+            0
+        }
+        Err(e) => {
+            log::line(&format!("share copy of {} failed: {e}", input.display()));
+            emit(serde_json::json!({ "error": e }));
+            1
+        }
+    }
+}
+
+#[cfg(windows)]
+fn copy_for_sharing(input: &std::path::Path, output: &std::path::Path, progress: &mut dyn FnMut(f64)) -> Result<(u32, u32, f64, &'static str), String> {
+    if std::env::var_os("TAPE_FAKE").is_some() {
+        return fake::share_copy(input, output, progress);
+    }
+    let copied = win::share::share_copy(input, output, progress)?;
+    Ok((copied.width, copied.height, copied.seconds, copied.path))
+}
+
+#[cfg(not(windows))]
+fn copy_for_sharing(input: &std::path::Path, output: &std::path::Path, progress: &mut dyn FnMut(f64)) -> Result<(u32, u32, f64, &'static str), String> {
+    fake::share_copy(input, output, progress)
+}

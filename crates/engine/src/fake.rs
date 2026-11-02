@@ -199,3 +199,17 @@ impl Backend for Fake {
         format!("fake backend, {} frames at {} Hz audio", self.video.len(), AUDIO_RATE)
     }
 }
+
+/// Stands in for the shared copy where there's no Media Foundation: the clip itself, in steps so
+/// progress shows. `TAPE_FAKE_SHARE_FAIL` makes it fail, for the UI.
+pub fn share_copy(input: &std::path::Path, output: &std::path::Path, progress: &mut dyn FnMut(f64)) -> Result<(u32, u32, f64, &'static str), String> {
+    if let Ok(reason) = std::env::var("TAPE_FAKE_SHARE_FAIL") {
+        return Err(reason);
+    }
+    for step in 1..=4 {
+        std::thread::sleep(Duration::from_millis(150));
+        progress(step as f64 / 4.0);
+    }
+    std::fs::copy(input, output).map_err(|e| e.to_string())?;
+    Ok((1920, 1080, 0.0, "copy"))
+}

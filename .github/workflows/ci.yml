@@ -21,11 +21,20 @@ jobs:
         run: sudo apt-get update -q && sudo apt-get install -yq ffmpeg
       - name: Test
         run: cargo test -p tape-core -p tape-engine -p nvenc
+      - name: Make a clip for the shared-link conversion
+        # 1440p at 120 fps, so the Windows job has to scale it and drop frames.
+        run: |
+          mkdir -p /tmp/share-fixture
+          ffmpeg -loglevel error -f lavfi -i testsrc2=size=2560x1440:rate=120 -f lavfi -i sine=frequency=440:sample_rate=48000 \
+            -t 3 -c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a aac -ac 2 -b:a 192k /tmp/share-fixture/clip.mp4
+
       - name: Keep the fake engine's video and audio for the UI test
         uses: actions/upload-artifact@v4
         with:
           name: fixtures
-          path: /tmp/tape-e2e-*/*.frames
+          path: |
+            /tmp/tape-e2e-*/*.frames
+            /tmp/share-fixture/clip.mp4
 
   windows:
     runs-on: windows-latest
@@ -57,6 +66,16 @@ jobs:
         with:
           name: fixtures
           path: ${{ runner.temp }}/fixtures
+
+      - name: Shared-link copy
+        shell: pwsh
+        run: |
+          $clip = Get-ChildItem "$env:RUNNER_TEMP\fixtures" -Recurse -Filter clip.mp4 | Select-Object -First 1
+          $out = "$env:RUNNER_TEMP\share.mp4"
+          $p = Start-Process -FilePath target\release\tape.exe -ArgumentList "--share-copy", "`"$($clip.FullName)`"", "`"$out`"", "`"$env:RUNNER_TEMP\share.log`"" -Wait -PassThru -RedirectStandardOutput "$env:RUNNER_TEMP\share.out"
+          Get-Content "$env:RUNNER_TEMP\share.out" | Select-Object -Last 2
+          Get-Content "$env:RUNNER_TEMP\share.log" -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0 -or -not (Test-Path $out)) { "::error::the shared-link copy failed"; exit 1 }
 
       - name: UI test
         shell: pwsh
@@ -113,3 +132,27 @@ jobs:
             ${{ runner.temp }}/tape-selftest.aac
             ${{ runner.temp }}/ui-test.json
             ${{ runner.temp }}/engine.log
+            ${{ runner.temp }}/share.mp4
+            ${{ runner.temp }}/share.log
+
+  share-copy:
+    # Decodes what the Windows job's conversion made: H.264 at 1080p60 with AAC, as every browser plays.
+    runs-on: ubuntu-latest
+    needs: windows
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: self-test
+          path: out
+      - name: Check the copy
+        run: |
+          sudo apt-get update -q && sudo apt-get install -yq ffmpeg
+          f=$(find out -name share.mp4 | head -1)
+          v=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,width,height,avg_frame_rate -of csv=p=0 "$f")
+          a=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of csv=p=0 "$f")
+          echo "video: $v  audio: $a"
+          IFS=, read -r codec width height rate <<< "$v"
+          fps=$(awk -F/ '{ printf "%.0f", $1 / $2 }' <<< "$rate")
+          [ "$codec,$width,$height,$fps" = "h264,1920,1080,60" ] && [ "$a" = "aac" ]
+          ffmpeg -v error -i "$f" -f null - 2>&1 | tee errors.txt
+          test ! -s errors.txt

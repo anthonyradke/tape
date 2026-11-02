@@ -77,7 +77,7 @@ fn thumbnail_key(path: &Path, bytes: u64, modified: u64) -> String {
 
 /// Thumbnails by key. Each file is called <key>_<duration in ms>.jpg, so finding them also gives
 /// every clip's length without opening it.
-fn thumbnails(dir: &Path) -> HashMap<String, (PathBuf, f64)> {
+pub(crate) fn thumbnails(dir: &Path) -> HashMap<String, (PathBuf, f64)> {
     let Ok(entries) = std::fs::read_dir(dir) else { return HashMap::new() };
     entries
         .flatten()
@@ -88,6 +88,13 @@ fn thumbnails(dir: &Path) -> HashMap<String, (PathBuf, f64)> {
             Some((key.to_string(), (path.clone(), millis.parse::<f64>().ok()? / 1000.0)))
         })
         .collect()
+}
+
+/// The key `add_clips` gives a file, which the share server keeps to match links to clips.
+pub(crate) fn clip_key(path: &Path) -> Option<String> {
+    let meta = std::fs::metadata(path).ok()?;
+    let modified = meta.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_millis() as u64;
+    Some(thumbnail_key(path, meta.len(), modified))
 }
 
 fn add_clips(dir: &Path, game: &str, known: &HashMap<String, (PathBuf, f64)>, clips: &mut Vec<ClipFile>) {
@@ -223,6 +230,10 @@ pub fn save_settings(app: AppHandle, settings: Settings) -> View {
     let settings = settings.normalized();
     let keys_changed = shared.settings.lock().unwrap().hotkeys != settings.hotkeys;
     let folder_changed = shared.settings.lock().unwrap().folder != settings.folder;
+    let server_changed = {
+        let old = shared.settings.lock().unwrap();
+        old.share_server != settings.share_server || old.share_key != settings.share_key
+    };
     *shared.settings.lock().unwrap() = settings.clone();
     shared.persist();
     state::send(&app, &Command::Configure { settings: Box::new(settings) });
@@ -231,6 +242,9 @@ pub fn save_settings(app: AppHandle, settings: Settings) -> View {
     }
     if folder_changed {
         allow_media(&app);
+    }
+    if server_changed {
+        crate::share::forget(&app);
     }
     let _ = app.emit("changed", ());
     tray::refresh(&app);
@@ -307,7 +321,7 @@ pub fn open_folder(app: AppHandle) {
 
 /// Only videos in the clips folder or a game folder directly under it: this takes a path from the
 /// webview. Comparing exact parents leaves no way to climb out with "..".
-fn inside_folder(app: &AppHandle, path: &str) -> bool {
+pub(crate) fn inside_folder(app: &AppHandle, path: &str) -> bool {
     let folder = app.state::<Shared>().folder();
     let path = Path::new(path);
     let parent = path.parent();

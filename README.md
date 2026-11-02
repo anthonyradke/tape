@@ -31,6 +31,9 @@ OBS or ffmpeg underneath. It was written after the NVIDIA app's instant replay k
 - Game audio from any output device and a microphone from any input device, mixed or on separate tracks.
 - A side panel over the game on Alt+Z with replay, recording, common settings and recent clips.
 - A gallery with thumbnails and a built-in player, filtered by game.
+- Copy link: uploads a 1080p H.264 copy of a clip to a self-hosted Cloudflare Worker and copies a link that plays
+  in a browser and embeds in chat apps, then expires after 7 days. Storage use against R2's free 10 GB is shown in
+  the app. See [share/README.md](share/README.md).
 - Clips sorted into a folder per game under `Videos\Tape`, using NVIDIA's file names
   (`Fortnite 2026.10.08 - 22.14.44.26.DVR.mp4`, without `.DVR` for recordings).
 - Global hotkeys, defaulting to the ones ShadowPlay uses (Alt+F10, Alt+F9, Alt+Shift+F10, Alt+Z).
@@ -106,6 +109,7 @@ installer's signature against a public key built into it before running it.
 | `crates/engine` | The engine process. `win/` is the real backend, `fake.rs` a stand-in for tests |
 | `app/src-tauri` | The tray app: supervisor, hotkeys, overlay window, updates |
 | `app/ui` | Plain HTML, CSS and JavaScript with no build step |
+| `share` | The Cloudflare Worker behind Copy link |
 
 ## Build from source
 
@@ -125,6 +129,7 @@ builds the app without one.
 | MP4 output for all three codecs, crash recovery, audio sync | `cargo test -p tape-core`, decoded by ffmpeg |
 | Engine behavior: clips, recording, restarts, hangs, device loss | `cargo test -p tape-engine`, a real process on a fake backend |
 | D3D11, both capture APIs, pointer shaders, AAC | `tape --self-test report.txt` on a Windows CI runner |
+| The shared-link copy: scaling, frame dropping, H.264 and AAC | `tape --share-copy` on a Windows CI runner, decoded by ffmpeg |
 | Playback, seeking and thumbnails in WebView2, overlay window | The real app on the fake engine on a Windows CI runner, driven by `app/ui/uitest.js` |
 | NVENC, video processor, WASAPI | The self-test on a machine with an NVIDIA GPU, from Settings > Run self-test |
 
@@ -154,6 +159,8 @@ own process, because a process can only duplicate an output once and replay stay
 - Upscaling adds pixels, not detail. It suits sites that keep higher resolutions at better quality.
 - Sound cues play through the normal output, so they end up in clips, and so does audio from a clip played in the app.
 - Games in a window outside a known store folder aren't recognized and go in `Desktop`.
+- Shared links carry the first audio track only, so with separate tracks they have game audio without the mic.
+  Sharing an HEVC clip needs the HEVC Video Extensions from the Microsoft Store.
 - The built-in player needs Windows' codecs for HEVC and AV1. Clips that can't play there open in the default app.
 - The installer isn't code-signed.
 

@@ -295,6 +295,33 @@ fn check_aac(out: &mut String, backend: &Windows) {
     }
 }
 
+/// Makes the shared-link copy of the clips the encode checks wrote: the 4K one shows scaling, the
+/// HEVC and AV1 ones whether Windows can decode those formats.
+fn check_share(out: &mut String) {
+    let mut any = false;
+    for name in ["H.264-4K", "H.264", "HEVC", "AV1"] {
+        let input = std::env::temp_dir().join(format!("tape-selftest-{name}.mp4"));
+        if !input.exists() {
+            continue;
+        }
+        any = true;
+        let output = std::env::temp_dir().join(format!("tape-selftest-share-{name}.mp4"));
+        let began = Instant::now();
+        match super::share::share_copy(&input, &output, &mut |_| {}) {
+            Ok(c) => {
+                let bytes = std::fs::metadata(&output).map(|m| m.len()).unwrap_or(0);
+                line!(out, "  from {name}: OK, {}x{}, {:.1} s of video in {:.1} s by {}, {bytes} bytes", c.width, c.height, c.seconds, began.elapsed().as_secs_f32(), c.path);
+            }
+            Err(e) => {
+                line!(out, "  from {name}: FAILED, {e}");
+            }
+        }
+    }
+    if !any {
+        line!(out, "  skipped, no test clips were encoded");
+    }
+}
+
 pub fn report(backend: &Windows, settings: &Settings) -> String {
     super::com_init();
     let mut out = String::new();
@@ -342,6 +369,9 @@ pub fn report(backend: &Windows, settings: &Settings) -> String {
             check_encode(&mut out, &Settings { resolution: 2160, ..settings.clone() }, Codec::H264, "H.264-4K");
         }
     }
+
+    line!(out, "\nSharing");
+    check_share(&mut out);
 
     line!(out, "\nAudio");
     check_audio(&mut out, "Output loopback", Source::System);

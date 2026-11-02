@@ -89,6 +89,7 @@ document.addEventListener("click", (e) => {
     case "clip": return invoke("save_clip");
     case "record": return invoke("toggle_recording");
     case "settings": return invoke("open_main");
+    case "links": return invoke("open_main");
   }
 });
 
@@ -123,4 +124,5 @@ listen("overlay-shown", opened);
 listen("overlay-hidden", () => Gallery.stop());
 
 Gallery.mount($("gallery"), (open) => invoke("overlay_player", { open }));
+Cloud.load(false);
 opened();

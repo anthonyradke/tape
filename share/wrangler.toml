@@ -1,0 +1,17 @@
+# The server behind tape's "Copy link". Deploy your own with `npx wrangler deploy` after creating
+# the bucket (see README.md), then put its address and upload key in tape's settings.
+name = "tape-clips"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "tape-clips"
+
+[vars]
+# How long a link plays before it stops working.
+LINK_DAYS = "7"
+# R2's free storage. Uploads are refused past CAP_PERCENT of it, so the account is never billed for space.
+FREE_BYTES = "10000000000"
+CAP_PERCENT = "95"

@@ -6,6 +6,7 @@
 //! Clips are written in one go with the `moov` first so they start instantly when shared.
 
 mod boxes;
+pub mod faststart;
 pub mod codec;
 mod writer;
 

@@ -308,3 +308,40 @@ fn dropped_frames_keep_later_frames_on_time() {
     let duration: f64 = info["format"]["duration"].as_str().unwrap().parse().unwrap();
     assert!((duration - 5.0).abs() < 0.05, "duration {duration}");
 }
+
+fn frame_hashes(path: &Path) -> String {
+    let out = Command::new("ffmpeg").args(["-v", "error", "-i"]).arg(path).args(["-map", "0", "-f", "framemd5", "-"]).output().unwrap();
+    assert!(out.status.success(), "framemd5: {}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8(out.stdout).unwrap().lines().filter(|l| !l.starts_with('#')).collect::<Vec<_>>().join("\n")
+}
+
+/// The shared-link copy comes from Media Foundation with its index at the end. Moving it must
+/// leave every frame decoding exactly as before.
+#[test]
+fn faststart_moves_the_index_without_changing_a_frame() {
+    if !have_ffmpeg() {
+        eprintln!("skipped: no ffmpeg");
+        return;
+    }
+    use tape_core::mp4::faststart::faststart;
+    let path = tmp("faststart.mp4");
+    // Long enough for several chunks per track, with an extra box in front like Media Foundation's.
+    ffmpeg(&[
+        "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=60", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+        "-t", "6", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac",
+        "-metadata", "title=tape", path.to_str().unwrap(),
+    ]);
+    let before = top_level_boxes(&path);
+    assert!(before.iter().position(|b| b == "moov") > before.iter().position(|b| b == "mdat"), "{before:?}");
+    let hashes = frame_hashes(&path);
+
+    assert!(faststart(&path).unwrap());
+    let after = top_level_boxes(&path);
+    assert!(after.iter().position(|b| b == "moov") < after.iter().position(|b| b == "mdat"), "{after:?}");
+    decode_clean(&path);
+    assert_eq!(frame_hashes(&path), hashes);
+
+    // Already in order: left alone.
+    assert!(!faststart(&path).unwrap());
+    assert_eq!(frame_hashes(&path), hashes);
+}

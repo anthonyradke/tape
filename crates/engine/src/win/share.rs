@@ -163,17 +163,11 @@ fn convert(input: &Path, output: &Path, mode: Mode, progress: &mut dyn FnMut(f64
 
         let sink = attributes(4).map_err(text)?;
         sink.SetGUID(&MF_TRANSCODE_CONTAINERTYPE, &MFTranscodeContainerType_MPEG4).map_err(text)?;
-        // Index at the front, so the video starts playing before it has all downloaded.
-        sink.SetUINT32(&MF_MPEG4SINK_MOOV_BEFORE_MDAT, 1).map_err(text)?;
         sink.SetUINT32(&MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, (mode != Mode::Software) as u32).map_err(text)?;
         if let Some(manager) = &manager {
             sink.SetUnknown(&MF_SINK_WRITER_D3D_MANAGER, manager).map_err(text)?;
         }
-        // Opened here for reading as well: moving the index to the front reads the file back, which
-        // a writer that opens the path itself can't, and Finalize fails with access denied.
-        let file = MFCreateFile(MF_ACCESSMODE_READWRITE, MF_OPENMODE_DELETE_IF_EXIST, MF_FILEFLAGS_NONE, &HSTRING::from(output.as_os_str()))
-            .map_err(|e| format!("can't write the copy: {e}"))?;
-        let writer = MFCreateSinkWriterFromURL(&HSTRING::from(output.as_os_str()), &file, &sink).map_err(|e| format!("can't write the copy: {e}"))?;
+        let writer = MFCreateSinkWriterFromURL(&HSTRING::from(output.as_os_str()), None, &sink).map_err(|e| format!("can't write the copy: {e}"))?;
 
         let encoded = video_type(&MFVideoFormat_H264, &target).map_err(text)?;
         encoded.SetUINT32(&MF_MT_AVG_BITRATE, target.bitrate).map_err(text)?;
@@ -256,7 +250,11 @@ fn convert(input: &Path, output: &Path, mode: Mode, progress: &mut dyn FnMut(f64
             }
         }
         writer.Finalize().map_err(|e| format!("couldn't finish the copy: {e}"))?;
-        let _ = file.Close();
+        drop(writer);
+        // Index at the front, so the video starts playing before it has all downloaded. Done here
+        // rather than with MF_MPEG4SINK_MOOV_BEFORE_MDAT, which on a runner either failed with
+        // access denied or, given a read-write stream, scrambled the data it moved.
+        tape_core::mp4::faststart::faststart(output).map_err(|e| format!("couldn't finish the copy: {e}"))?;
         Ok((target.width, target.height, duration as f64 / HUNDRED_NS))
     }
 }

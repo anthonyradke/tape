@@ -154,5 +154,9 @@ jobs:
           IFS=, read -r codec width height rate <<< "$v"
           fps=$(awk -F/ '{ printf "%.0f", $1 / $2 }' <<< "$rate")
           [ "$codec,$width,$height,$fps" = "h264,1920,1080,60" ] && [ "$a" = "aac" ]
+          # moov before mdat, so a link starts playing before the whole file has downloaded.
+          python3 -c "import struct,sys; d=open(sys.argv[1],'rb').read(); o=0; t=[]
+          while o < len(d): s,k=struct.unpack('>I4s',d[o:o+8]); s=struct.unpack('>Q',d[o+8:o+16])[0] if s==1 else s; t.append(k); o+=s
+          print(t); assert t.index(b'moov') < t.index(b'mdat')" "$f"
           ffmpeg -v error -i "$f" -f null - 2>&1 | tee errors.txt
           test ! -s errors.txt

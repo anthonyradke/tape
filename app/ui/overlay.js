@@ -1,5 +1,5 @@
-// The side panel that opens over a game. Esc, the hotkey, Alt+Tab or clicking back into the game
-// all close it, and nothing here is ever left in the way.
+// The side panel that opens over a game, without taking focus from it. Esc, the hotkey, the close
+// button or Alt+Tab close it, and nothing here is ever left in the way.
 "use strict";
 
 // Windows can report a lost focus while a window is still being brought forward.
@@ -94,12 +94,19 @@ document.addEventListener("click", (e) => {
 
 document.addEventListener("contextmenu", (e) => e.preventDefault());
 
-document.addEventListener("keydown", (e) => {
-  if (e.key !== "Escape") return;
+function escape() {
   if (Gallery.isOpen()) Gallery.stop();
   else hide();
+}
+
+// Esc comes from the app as a global key, since the game keeps the keyboard. The keydown is for
+// when a click gave the panel focus after all.
+listen("overlay-escape", escape);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") escape();
 });
 
+// Only if a click gave it focus: clicking back into the game then closes it.
 window.addEventListener("blur", () => {
   if (Date.now() - openedAt > IGNORE_BLUR_MS) hide();
 });

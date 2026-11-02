@@ -88,7 +88,9 @@ shared.
 
 The overlay is an ordinary always-on-top window docked to the side of the screen and excluded from
 capture with `WDA_EXCLUDEFROMCAPTURE`, not a hook into the game's renderer, which is what anti-cheat
-software looks for. Its webview is created on first use and released after five minutes hidden.
+software looks for. It opens without taking focus, because a fullscreen game leaves fullscreen when it
+loses focus, so Esc is held as a global key while it's open. Its webview is created on first use and
+released after five minutes hidden.
 
 Game names come from Steam's manifests and from install folders of other stores, with a short table for
 games those don't cover. Anything else counts as a game if it fills a monitor without a title bar, and
@@ -145,8 +147,10 @@ own process, because a process can only duplicate an output once and replay stay
 
 - NVIDIA GPUs only. The monitor being captured has to be connected to one.
 - HDR is captured as SDR.
-- A game in true exclusive fullscreen drops to the desktop while the overlay is open, as with Alt+Tab. Borderless and
-  Windows' default fullscreen don't.
+- The overlay can't be seen over a game in true exclusive fullscreen. Borderless and Windows' default fullscreen
+  show it.
+- The game keeps the mouse and keyboard while the overlay is open. A game that locks the cursor has to be paused to
+  its menu before the overlay's buttons can be clicked.
 - Upscaling adds pixels, not detail. It suits sites that keep higher resolutions at better quality.
 - Sound cues play through the normal output, so they end up in clips, and so does audio from a clip played in the app.
 - Games in a window outside a known store folder aren't recognized and go in `Desktop`.

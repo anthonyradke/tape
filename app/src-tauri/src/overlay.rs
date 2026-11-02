@@ -1,7 +1,8 @@
 //! The side panel on Alt+Z, docked to the right of the screen with the game still in view. It's an
 //! ordinary always-on-top window, on purpose: anything that hooks into a game's renderer risks an
-//! anti-cheat ban. Games in borderless or Windows' default fullscreen show it fine; true exclusive
-//! fullscreen drops to the desktop, as with Alt+Tab.
+//! anti-cheat ban. It opens without taking focus, since a game in fullscreen drops out of it the
+//! moment it loses focus, as with Alt+Enter. So the game keeps the keyboard, and Esc reaches the
+//! panel as a global key while it's open. True exclusive fullscreen doesn't show it at all.
 //!
 //! The window is excluded from capture so it can't end up in a clip. Its webview only exists while
 //! it's in use, so it costs nothing during a game.
@@ -11,6 +12,7 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager, Monitor, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
+use crate::hotkeys;
 use crate::state::Shared;
 
 const LABEL: &str = "overlay";
@@ -26,9 +28,12 @@ const PLAYER_SHARE: f64 = 0.72;
 /// Counts openings, so a timer can tell the overlay has been used since it started.
 static OPENED: AtomicU32 = AtomicU32::new(0);
 
+pub fn is_open(app: &AppHandle) -> bool {
+    app.get_webview_window(LABEL).is_some_and(|w| w.is_visible().unwrap_or(false))
+}
+
 pub fn toggle(app: &AppHandle) {
-    let open = app.get_webview_window(LABEL).is_some_and(|w| w.is_visible().unwrap_or(false));
-    if open {
+    if is_open(app) {
         hide(app);
     } else {
         show(app);
@@ -45,6 +50,7 @@ fn build(app: &AppHandle) -> Option<WebviewWindow> {
         .resizable(false)
         .skip_taskbar(true)
         .always_on_top(true)
+        .focusable(false)
         .content_protected(true)
         .visible(false)
         .build()
@@ -100,16 +106,39 @@ fn show(app: &AppHandle) {
     OPENED.fetch_add(1, Ordering::Relaxed);
     remember_foreground();
     place_panel(app, &window);
-    let _ = window.show();
-    let _ = window.set_focus();
+    show_without_focus(&window);
+    hotkeys::grab_escape(app, true);
     let _ = app.emit_to(LABEL, "overlay-shown", ());
+    close_when_game_left(app, OPENED.load(Ordering::Relaxed));
+}
+
+/// The panel never has focus, so it can't tell from a blur that the player Alt+Tabbed away.
+fn close_when_game_left(app: &AppHandle, opened: u32) {
+    let app = app.clone();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(250));
+        let Some(window) = app.get_webview_window(LABEL) else { return };
+        if OPENED.load(Ordering::Relaxed) != opened || !is_open(&app) {
+            return;
+        }
+        if focus_moved_on(&window) {
+            hide(&app);
+            return;
+        }
+    });
 }
 
 pub fn hide(app: &AppHandle) {
     let Some(window) = app.get_webview_window(LABEL) else { return };
     let _ = app.emit_to(LABEL, "overlay-hidden", ());
-    let _ = window.hide();
-    restore_foreground();
+    hotkeys::grab_escape(app, false);
+    // Only if the panel took the focus, from a click say. If the player went to another window,
+    // they stay there.
+    let had_focus = is_foreground(&window);
+    hide_window(&window);
+    if had_focus {
+        give_focus_back();
+    }
     let opened = OPENED.load(Ordering::Relaxed);
     std::thread::spawn(move || {
         std::thread::sleep(KEEP_WARM);
@@ -119,13 +148,13 @@ pub fn hide(app: &AppHandle) {
     });
 }
 
-/// For the UI test: whether it's up, whether Windows will leave it out of captures, and whether
-/// it's the side panel and not the whole screen.
-pub fn state(app: &AppHandle) -> (bool, bool, bool) {
-    let Some(window) = app.get_webview_window(LABEL) else { return (false, false, false) };
+/// For the UI test: whether it's up, whether Windows will leave it out of captures, whether it's
+/// the side panel and not the whole screen, and whether it left the focus where it was.
+pub fn state(app: &AppHandle) -> (bool, bool, bool, bool) {
+    let Some(window) = app.get_webview_window(LABEL) else { return (false, false, false, true) };
     let width = window.outer_size().map_or(u32::MAX, |s| s.width);
     let narrow = monitor(app).is_some_and(|m| width < m.size().width / 2);
-    (window.is_visible().unwrap_or(false), excluded_from_capture(&window), narrow)
+    (window.is_visible().unwrap_or(false), excluded_from_capture(&window), narrow, !is_foreground(&window))
 }
 
 #[cfg(windows)]
@@ -134,27 +163,63 @@ mod platform {
 
     use tauri::WebviewWindow;
     use windows::Win32::Foundation::HWND;
-    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowDisplayAffinity, SetForegroundWindow, WDA_EXCLUDEFROMCAPTURE};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowDisplayAffinity, SetForegroundWindow, SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE,
+        SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, WDA_EXCLUDEFROMCAPTURE,
+    };
 
-    /// The window to give focus back to.
+    /// The window that had focus when the panel opened, normally the game.
     static PREVIOUS: AtomicIsize = AtomicIsize::new(0);
+
+    fn hwnd(window: &WebviewWindow) -> Option<HWND> {
+        window.hwnd().ok().map(|h| HWND(h.0))
+    }
+
+    fn previous() -> HWND {
+        HWND(PREVIOUS.load(Ordering::Relaxed) as *mut _)
+    }
 
     pub fn remember_foreground() {
         PREVIOUS.store(unsafe { GetForegroundWindow() }.0 as isize, Ordering::Relaxed);
     }
 
+    /// Tauri's show() activates the window, which is the one thing this mustn't do. Tauri keeps
+    /// thinking it's hidden, which is harmless as long as hide_window is what hides it again.
+    pub fn show_without_focus(window: &WebviewWindow) {
+        let Some(handle) = hwnd(window) else { return };
+        unsafe {
+            let _ = ShowWindow(handle, SW_SHOWNOACTIVATE);
+            let _ = SetWindowPos(handle, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+    }
+
+    pub fn hide_window(window: &WebviewWindow) {
+        let Some(handle) = hwnd(window) else { return };
+        let _ = unsafe { ShowWindow(handle, SW_HIDE) };
+    }
+
+    pub fn is_foreground(window: &WebviewWindow) -> bool {
+        hwnd(window).is_some_and(|h| unsafe { GetForegroundWindow() } == h)
+    }
+
+    /// Something other than the game and the panel came to the front, Alt+Tab say.
+    pub fn focus_moved_on(window: &WebviewWindow) -> bool {
+        let now = unsafe { GetForegroundWindow() };
+        !now.is_invalid() && now != previous() && !is_foreground(window)
+    }
+
     /// Windows usually does this by itself, but not always to the game.
-    pub fn restore_foreground() {
-        let window = HWND(PREVIOUS.swap(0, Ordering::Relaxed) as *mut _);
-        if !window.is_invalid() {
-            let _ = unsafe { SetForegroundWindow(window) };
+    pub fn give_focus_back() {
+        let game = previous();
+        if !game.is_invalid() {
+            let _ = unsafe { SetForegroundWindow(game) };
         }
     }
 
     pub fn excluded_from_capture(window: &WebviewWindow) -> bool {
-        let Ok(handle) = window.hwnd() else { return false };
+        let Some(handle) = hwnd(window) else { return false };
         let mut affinity = 0;
-        let got = unsafe { GetWindowDisplayAffinity(HWND(handle.0), &mut affinity) };
+        let got = unsafe { GetWindowDisplayAffinity(handle, &mut affinity) };
         got.is_ok() && affinity == WDA_EXCLUDEFROMCAPTURE.0
     }
 }
@@ -164,10 +229,22 @@ mod platform {
     use tauri::WebviewWindow;
 
     pub fn remember_foreground() {}
-    pub fn restore_foreground() {}
+    pub fn show_without_focus(window: &WebviewWindow) {
+        let _ = window.show();
+    }
+    pub fn hide_window(window: &WebviewWindow) {
+        let _ = window.hide();
+    }
+    pub fn is_foreground(window: &WebviewWindow) -> bool {
+        window.is_focused().unwrap_or(false)
+    }
+    pub fn focus_moved_on(_window: &WebviewWindow) -> bool {
+        false
+    }
+    pub fn give_focus_back() {}
     pub fn excluded_from_capture(_window: &WebviewWindow) -> bool {
         false
     }
 }
 
-use platform::{excluded_from_capture, remember_foreground, restore_foreground};
+use platform::{excluded_from_capture, focus_moved_on, give_focus_back, hide_window, is_foreground, remember_foreground, show_without_focus};

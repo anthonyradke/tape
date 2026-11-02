@@ -4,7 +4,7 @@ use std::sync::Mutex;
 
 use tape_core::settings::Hotkeys;
 use tauri::plugin::TauriPlugin;
-use tauri::{AppHandle, Manager, Wry};
+use tauri::{AppHandle, Emitter, Manager, Wry};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 use crate::{commands, overlay};
@@ -16,6 +16,7 @@ enum Action {
     ToggleRecording,
     ToggleReplay,
     Overlay,
+    Escape,
 }
 
 static BINDINGS: Mutex<Vec<(u32, Action)>> = Mutex::new(Vec::new());
@@ -32,6 +33,9 @@ pub fn plugin() -> TauriPlugin<Wry> {
                 Some(Action::ToggleRecording) => commands::do_toggle_recording(app),
                 Some(Action::ToggleReplay) => commands::do_toggle_replay(app),
                 Some(Action::Overlay) => overlay::toggle(app),
+                Some(Action::Escape) => {
+                    let _ = app.emit_to("overlay", "overlay-escape", ());
+                }
                 None => {}
             }
         })
@@ -67,6 +71,25 @@ pub fn register(app: &AppHandle) {
     }
     *BINDINGS.lock().unwrap() = bindings;
     *shared.hotkey_errors.lock().unwrap() = errors;
+    if overlay::is_open(app) {
+        grab_escape(app, true);
+    }
+}
+
+/// The overlay doesn't take focus from the game, so Esc only reaches it like this. Held only
+/// while it's open, so the game gets Esc back after.
+pub fn grab_escape(app: &AppHandle, on: bool) {
+    let Ok(escape) = "Escape".parse::<Shortcut>() else { return };
+    let manager = app.global_shortcut();
+    // Not holding the lock through these: they wait on the main thread, which may be waiting on it.
+    BINDINGS.lock().unwrap().retain(|(_, a)| !matches!(a, Action::Escape));
+    if on {
+        if manager.register(escape).is_ok() {
+            BINDINGS.lock().unwrap().push((escape.id(), Action::Escape));
+        }
+    } else if manager.is_registered(escape) {
+        let _ = manager.unregister(escape);
+    }
 }
 
 /// While the UI listens for a new key, none of them fire.

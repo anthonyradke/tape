@@ -98,6 +98,7 @@ jobs:
           if (-not $r.overlayOpen[0]) { $bad += "the overlay didn't open" }
           if (-not $r.overlayOpen[1]) { $bad += "the overlay isn't excluded from capture" }
           if (-not $r.overlayOpen[2]) { $bad += "the overlay isn't a side panel" }
+          if (-not $r.overlayOpen[3]) { $bad += "the overlay took focus, which knocks a game out of fullscreen" }
           if ($r.overlayClosed[0]) { $bad += "the overlay didn't close" }
           $bad | ForEach-Object { "::error::$_" }
           if ($bad) { exit 1 }

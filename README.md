@@ -23,6 +23,7 @@ OBS or ffmpeg underneath. It was written after the NVIDIA app's instant replay k
 ## Features
 
 - Instant replay held in RAM, from 30 seconds to 20 minutes. Nothing touches the disk until a clip is saved.
+- Clips saved in quick succession don't overlap: each starts where the last one ended.
 - Recording alongside replay, from one encoder session.
 - H.264, HEVC or AV1, chosen from what the GPU reports, with bitrate, frame rate and quality settings that apply as
   soon as they change.

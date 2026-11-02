@@ -15,7 +15,7 @@
     video: { running: !trouble && scene !== "off" || recording, width: 1920, height: 1080, fps: 60, method: "Desktop Duplication", encodeMs: 4.1, dropped: 0, bitrateKbps: 41800, problem: null },
     system: { name: "Headphones (Arctis Nova 5)", running: true, peak: 0.42, problem: null },
     mic: settings.microphone ? { name: "Headset Microphone", running: true, peak: 0.18, problem: null } : null,
-    replayOn: settings.replay, replaySeconds: 87.4, replayTarget: 120, replayBytes: 480e6,
+    replayOn: settings.replay, replaySeconds: 87.4, clipSeconds: 87.4, replayTarget: 120, replayBytes: 480e6,
     recording, recordingSeconds: recording ? 754 : 0, recordingBytes: recording ? 3.9e9 : 0, recordingPath: null, restarts: 0, game: "Counter-Strike 2",
   };
   const now = Date.now();

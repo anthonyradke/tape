@@ -192,6 +192,34 @@ fn replay_clip_has_the_requested_length_and_is_named_for_the_game() {
 }
 
 #[test]
+fn a_second_clip_starts_where_the_first_ended() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut e = Engine::start("follow-up", &[]);
+    e.configure(json!({"replaySeconds": 8, "microphone": ""}));
+    e.wait_status(15, "buffered", |s| s["replaySeconds"].as_f64().unwrap() >= 8.0);
+    e.send(json!({"cmd": "saveClip"}));
+    let first = e.wait(10, "first clip", |ev| ev["evt"] == "saved" || ev["evt"] == "error");
+    assert_eq!(first["evt"], "saved", "{first}");
+
+    // Straight after, there's nothing new to save yet.
+    e.send(json!({"cmd": "saveClip"}));
+    let early = e.wait(10, "answer", |ev| ev["evt"] == "saved" || ev["evt"] == "error");
+    assert_eq!(early["message"], "Nothing new since the last clip", "{early}");
+
+    let s = e.wait_status(15, "new footage", |s| s["clipSeconds"].as_f64().unwrap() >= 3.0);
+    assert_eq!(s["replaySeconds"].as_f64().unwrap(), 8.0, "the buffer stays full");
+    e.send(json!({"cmd": "saveClip"}));
+    let second = e.wait(10, "second clip", |ev| ev["evt"] == "saved" || ev["evt"] == "error");
+    assert_eq!(second["evt"], "saved", "{second}");
+    let path = saved(&second);
+    let d = seconds(&probe(&path));
+    assert!((3.0..=5.0).contains(&d), "second clip is {d} s");
+    decode_clean(&path);
+}
+
+#[test]
 fn recording_works_with_replay_off_and_is_a_normal_mp4() {
     if !have_ffmpeg() {
         return;

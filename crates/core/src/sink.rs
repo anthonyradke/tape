@@ -12,6 +12,8 @@ use crate::ring::Ring;
 pub struct Clip {
     pub tracks: Tracks,
     pub packets: Vec<Packet>,
+    /// Hand this to `Sink::clip_failed` if the clip couldn't be saved.
+    pub previous_cut: Option<i64>,
 }
 
 #[derive(Default)]
@@ -202,18 +204,34 @@ impl Sink {
         s.failure.take().or_else(|| s.active.as_ref().and_then(|a| a.recorder.failure()))
     }
 
+    /// Up to the newest `seconds`, starting where the last clip ended if that's more recent.
     pub fn clip(&self, seconds: u32) -> Option<Clip> {
-        let s = self.inner.lock().unwrap();
+        let mut s = self.inner.lock().unwrap();
         let packets = s.ring.snapshot(seconds);
         if packets.is_empty() {
             return None;
         }
-        Some(Clip { tracks: s.tracks.clone()?, packets })
+        let tracks = s.tracks.clone()?;
+        let previous_cut = s.ring.cut();
+        // Clips start on keyframes, so the next one needs one right here to pick up from.
+        self.want_keyframe.store(true, Ordering::Relaxed);
+        Some(Clip { tracks, packets, previous_cut })
+    }
+
+    /// Puts the footage of a clip that wasn't saved back in reach of the next one.
+    pub fn clip_failed(&self, previous_cut: Option<i64>) {
+        self.inner.lock().unwrap().ring.restore_cut(previous_cut);
     }
 
     pub fn replay_seconds(&self) -> f64 {
         let s = self.inner.lock().unwrap();
         s.ring.seconds(s.window)
+    }
+
+    /// Seconds a clip saved right now would hold.
+    pub fn clip_seconds(&self) -> f64 {
+        let s = self.inner.lock().unwrap();
+        s.ring.clip_seconds(s.window)
     }
 
     pub fn replay_bytes(&self) -> usize {
@@ -264,6 +282,36 @@ mod tests {
         sink.video(&format(1), 0, true, vec![1]);
         sink.video(&format(1), 1, false, vec![1]);
         sink.video(&format(2), 2, true, vec![1]);
+        assert_eq!(sink.clip(10).unwrap().packets.len(), 1);
+    }
+
+    #[test]
+    fn a_clip_asks_for_a_keyframe_and_the_next_starts_there() {
+        let sink = Sink::new(true, 10);
+        sink.video(&format(1), 0, true, vec![1]);
+        for pts in 1..30 {
+            sink.video(&format(1), pts, false, vec![1]);
+        }
+        let first = sink.clip(10).unwrap();
+        assert_eq!(first.packets.len(), 30);
+        assert!(sink.take_keyframe_request());
+        assert!(sink.clip(10).is_none());
+        sink.video(&format(1), 30, true, vec![1]);
+        for pts in 31..50 {
+            sink.video(&format(1), pts, false, vec![1]);
+        }
+        let second = sink.clip(10).unwrap();
+        assert_eq!(second.packets[0].pts, 30);
+        assert_eq!(second.packets.len(), 20);
+    }
+
+    #[test]
+    fn a_failed_clip_can_be_saved_again() {
+        let sink = Sink::new(true, 10);
+        sink.video(&format(1), 0, true, vec![1]);
+        let clip = sink.clip(10).unwrap();
+        assert!(sink.clip(10).is_none());
+        sink.clip_failed(clip.previous_cut);
         assert_eq!(sink.clip(10).unwrap().packets.len(), 1);
     }
 

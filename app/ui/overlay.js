@@ -54,7 +54,7 @@ function renderStatus(s) {
   $("p-rec-sub").textContent = s.recording ? bytes(s.recordingBytes) : "";
 
   $("b-clip").disabled = !s.replayOn;
-  $("b-clip-text").textContent = s.replayOn ? `Save last ${clock(Math.min(s.replaySeconds, s.replayTarget))}` : "Save clip";
+  $("b-clip-text").textContent = s.replayOn ? `Save last ${clock(Math.min(s.clipSeconds, s.replayTarget))}` : "Save clip";
   $("b-rec").className = s.recording ? "btn big quiet stop" : "btn big quiet";
   $("b-rec-text").textContent = s.recording ? "Stop recording" : "Start recording";
 }

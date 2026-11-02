@@ -285,6 +285,7 @@ impl Engine {
         thread::spawn(move || {
             thread::sleep(CLIP_SETTLE);
             let event = match sink.clip(seconds) {
+                None if sink.replay_seconds() > 0.0 => Event::Error { message: "Nothing new since the last clip".into(), clip: true },
                 None => Event::Error { message: "Nothing has been buffered yet".into(), clip: true },
                 Some(clip) => match write_file(&path, &clip) {
                     Ok(bytes) => {
@@ -293,6 +294,7 @@ impl Engine {
                     }
                     Err(e) => {
                         log!("clip failed: {e}");
+                        sink.clip_failed(clip.previous_cut);
                         Event::Error { message: format!("Couldn't save the clip: {e}"), clip: true }
                     }
                 },
@@ -384,6 +386,7 @@ impl Engine {
             mic: take_peak(&self.audio_shared.mic),
             replay_on: self.settings.replay,
             replay_seconds: self.sink.replay_seconds() as f32,
+            clip_seconds: self.sink.clip_seconds() as f32,
             replay_target: self.settings.replay_seconds,
             replay_bytes: self.sink.replay_bytes() as u64,
             recording: self.sink.is_recording(),

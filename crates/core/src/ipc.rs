@@ -50,6 +50,8 @@ pub struct Status {
     pub mic: Option<AudioSource>,
     pub replay_on: bool,
     pub replay_seconds: f32,
+    /// How long a clip saved now would be: shorter than the buffer right after another clip.
+    pub clip_seconds: f32,
     pub replay_target: u32,
     pub replay_bytes: u64,
     pub recording: bool,

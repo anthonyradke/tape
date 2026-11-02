@@ -8,6 +8,9 @@ use crate::packet::{Packet, Tracks};
 /// Longest gap between keyframes, plus slack. A clip has to start on a keyframe, so the ring
 /// keeps this much beyond the replay length.
 const KEYFRAME_MARGIN_US: i64 = 3_000_000;
+/// A clip right after another must have at least this much new footage, so a double press doesn't
+/// leave a file a few frames long.
+const MIN_FOLLOW_UP_US: i64 = 1_000_000;
 
 #[derive(Default)]
 pub struct Ring {
@@ -15,6 +18,9 @@ pub struct Ring {
     bytes: usize,
     retain_us: i64,
     newest_us: i64,
+    newest_video_us: i64,
+    /// The last video frame in the previous clip. The next clip starts after it.
+    cut_us: Option<i64>,
 }
 
 impl Ring {
@@ -33,11 +39,16 @@ impl Ring {
         self.packets.clear();
         self.bytes = 0;
         self.newest_us = 0;
+        self.newest_video_us = 0;
+        self.cut_us = None;
     }
 
     pub fn push(&mut self, packet: Packet, tracks: &Tracks) {
         let us = packet.micros(tracks.timescale(packet.track));
         self.newest_us = self.newest_us.max(us);
+        if packet.track == 0 {
+            self.newest_video_us = us;
+        }
         self.bytes += packet.data.len();
         self.packets.push_back((us, packet));
         self.evict();
@@ -65,12 +76,18 @@ impl Ring {
         ((self.newest_us - first) as f64 / 1e6).min(window as f64)
     }
 
-    /// The newest `seconds` of everything, starting on the keyframe at or before the window.
-    pub fn snapshot(&self, seconds: u32) -> Vec<Packet> {
+    /// Seconds a clip saved right now would hold, leaving out what the last clip already has.
+    pub fn clip_seconds(&self, window: u32) -> f64 {
+        let Some(start) = self.clip_start(window) else { return 0.0 };
+        ((self.newest_us - start) as f64 / 1e6).min(window as f64)
+    }
+
+    /// The keyframe at or before the window, or the first one after the last clip if that's later.
+    fn clip_start(&self, seconds: u32) -> Option<i64> {
         let target = self.newest_us - seconds as i64 * 1_000_000;
         let mut start = None;
         for (us, p) in &self.packets {
-            if p.track == 0 && p.key {
+            if p.track == 0 && p.key && self.cut_us.is_none_or(|cut| *us > cut) {
                 if *us <= target || start.is_none() {
                     start = Some(*us);
                 } else {
@@ -78,8 +95,22 @@ impl Ring {
                 }
             }
         }
-        let Some(start) = start else { return Vec::new() };
+        start.filter(|us| self.cut_us.is_none() || self.newest_us - us >= MIN_FOLLOW_UP_US)
+    }
+
+    /// The newest `seconds` of everything that isn't already in a clip, starting on a keyframe.
+    pub fn snapshot(&self, seconds: u32) -> Vec<Packet> {
+        let Some(start) = self.clip_start(seconds) else { return Vec::new() };
         self.packets.iter().filter(|(us, _)| *us >= start).map(|(_, p)| p.clone()).collect()
+    }
+
+    /// Everything so far counts as clipped. Returns the old cut, for `restore_cut`.
+    pub fn cut(&mut self) -> Option<i64> {
+        self.cut_us.replace(self.newest_video_us)
+    }
+
+    pub fn restore_cut(&mut self, cut: Option<i64>) {
+        self.cut_us = cut;
     }
 }
 
@@ -153,6 +184,85 @@ mod tests {
         ring.push(Packet { track: 0, pts: 1, key: false, data: Arc::new(vec![]) }, &t);
         assert!(ring.snapshot(10).is_empty());
         assert_eq!(ring.seconds(10), 0.0);
+    }
+
+    #[test]
+    fn next_clip_starts_after_the_last_one() {
+        let t = tracks();
+        let mut ring = Ring::new(10);
+        fill(&mut ring, 30);
+        ring.cut();
+        for frame in 300..330 {
+            // 300 is the keyframe the sink asks for after a clip.
+            ring.push(Packet { track: 0, pts: frame, key: frame % 20 == 0 || frame == 300, data: Arc::new(vec![0; 100]) }, &t);
+        }
+        let clip = ring.snapshot(10);
+        assert_eq!(clip[0].pts, 300);
+        assert_eq!(clip.len(), 30);
+        assert!((ring.clip_seconds(10) - 2.9).abs() < 1e-9);
+        assert!(ring.seconds(10) >= 10.0, "the buffer itself is still full");
+    }
+
+    #[test]
+    fn a_clip_longer_than_the_window_after_the_last_one_is_a_normal_clip() {
+        let mut ring = Ring::new(10);
+        fill(&mut ring, 5);
+        ring.cut();
+        let t = tracks();
+        for frame in 50..300 {
+            ring.push(Packet { track: 0, pts: frame, key: frame % 20 == 0, data: Arc::new(vec![0; 100]) }, &t);
+        }
+        // Newest frame is 29.9 s, as in the first test.
+        assert_eq!(ring.snapshot(10)[0].pts, 180);
+    }
+
+    #[test]
+    fn nothing_new_after_a_clip_gives_nothing() {
+        let t = tracks();
+        let mut ring = Ring::new(10);
+        fill(&mut ring, 30);
+        ring.cut();
+        assert!(ring.snapshot(10).is_empty());
+        assert_eq!(ring.clip_seconds(10), 0.0);
+        // A double press: a new keyframe, but barely any footage after it.
+        ring.push(Packet { track: 0, pts: 300, key: true, data: Arc::new(vec![]) }, &t);
+        ring.push(Packet { track: 0, pts: 301, key: false, data: Arc::new(vec![]) }, &t);
+        assert!(ring.snapshot(10).is_empty());
+    }
+
+    #[test]
+    fn audio_ahead_of_video_at_the_cut_does_not_skip_the_next_keyframe() {
+        let t = tracks();
+        let mut ring = Ring::new(10);
+        fill(&mut ring, 30);
+        ring.push(Packet { track: 1, pts: 31 * AUDIO_RATE as i64, key: true, data: Arc::new(vec![]) }, &t);
+        ring.cut();
+        for frame in 300..320 {
+            ring.push(Packet { track: 0, pts: frame, key: frame == 300, data: Arc::new(vec![]) }, &t);
+        }
+        let clip = ring.snapshot(10);
+        assert_eq!(clip.iter().find(|p| p.track == 0).unwrap().pts, 300);
+    }
+
+    #[test]
+    fn restoring_the_cut_gets_the_footage_back() {
+        let mut ring = Ring::new(10);
+        fill(&mut ring, 30);
+        let before = ring.snapshot(10).len();
+        let old = ring.cut();
+        ring.restore_cut(old);
+        assert_eq!(ring.snapshot(10).len(), before);
+    }
+
+    #[test]
+    fn clearing_forgets_the_cut() {
+        let t = tracks();
+        let mut ring = Ring::new(10);
+        fill(&mut ring, 30);
+        ring.cut();
+        ring.clear();
+        ring.push(Packet { track: 0, pts: 1, key: true, data: Arc::new(vec![]) }, &t);
+        assert_eq!(ring.snapshot(10).len(), 1);
     }
 
     #[test]

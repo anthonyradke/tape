@@ -52,7 +52,7 @@ pub fn run(settings: &Settings, ctx: &VideoContext) -> Result<(), String> {
     super::com_init();
     raise_thread("Capture");
 
-    let output = gfx::find(&settings.monitor)?;
+    let mut output = gfx::find(&settings.monitor)?;
     if !output.is_nvidia() {
         return Err(format!("{} is connected to {}, not an NVIDIA GPU", output.id, output.gpu));
     }
@@ -90,7 +90,16 @@ pub fn run(settings: &Settings, ctx: &VideoContext) -> Result<(), String> {
             let now = ctx.clock.now_us();
             if capture.is_none() && now >= next_open {
                 next_open = now + REOPEN_US;
-                match open_capture(&gfx, &output, settings, use_graphics) {
+                let opened = match gfx::current(&output.adapter, &output.id) {
+                    gfx::Current::Found(fresh) => {
+                        output = fresh;
+                        open_capture(&gfx, &output, settings, use_graphics)
+                    }
+                    gfx::Current::Missing => Err(CaptureError::Transient("The monitor is off or disconnected".into())),
+                    // The engine restarts the pipeline, which makes a new device on the right GPU.
+                    gfx::Current::Elsewhere => return Err(format!("{} changed GPUs, starting capture again", output.id)),
+                };
+                match opened {
                     Ok(c) => {
                         *ctx.stats.method.lock().unwrap() = c.method().to_string();
                         log!("capture: {}", c.method());
@@ -102,10 +111,12 @@ pub fn run(settings: &Settings, ctx: &VideoContext) -> Result<(), String> {
                         log!("capture: {}", e.message());
                         *ctx.stats.problem.lock().unwrap() = Some(e.message().to_string());
                         let refused = matches!(e, CaptureError::Refused(_));
-                        if settings.capture == CaptureMethod::Auto && refused && !use_graphics && attempts >= AUTO_ATTEMPTS {
-                            log!("capture: switching to Windows Graphics Capture");
-                            use_graphics = true;
+                        // Auto keeps alternating, so a refusal that has passed (a display change
+                        // mid-open) doesn't leave it stuck on the fallback for good.
+                        if settings.capture == CaptureMethod::Auto && refused && attempts >= AUTO_ATTEMPTS {
+                            use_graphics = !use_graphics;
                             attempts = 0;
+                            log!("capture: switching to {}", if use_graphics { "Windows Graphics Capture" } else { "Desktop Duplication" });
                         }
                     }
                 }

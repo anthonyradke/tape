@@ -65,39 +65,7 @@ pub fn outputs() -> Result<Vec<OutputInfo>, String> {
     let mut found = Vec::new();
     for a in 0.. {
         let Ok(adapter) = (unsafe { factory.EnumAdapters1(a) }) else { break };
-        let Ok(desc) = (unsafe { adapter.GetDesc1() }) else { continue };
-        for o in 0.. {
-            let Ok(output) = (unsafe { adapter.EnumOutputs(o) }) else { break };
-            let Ok(info) = (unsafe { output.GetDesc() }) else { continue };
-            if !info.AttachedToDesktop.as_bool() {
-                continue;
-            }
-            let Ok(output) = output.cast::<IDXGIOutput1>() else { continue };
-            let RECT { left, top, right, bottom } = info.DesktopCoordinates;
-
-            let mut monitor = MONITORINFOEXW::default();
-            monitor.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
-            let got = unsafe { GetMonitorInfoW(info.Monitor, &mut monitor as *mut _ as *mut MONITORINFO) };
-            let primary = got.as_bool() && monitor.monitorInfo.dwFlags & MONITORINFOF_PRIMARY != 0;
-
-            let id = wide(&info.DeviceName);
-            let mut mode = DEVMODEW { dmSize: size_of::<DEVMODEW>() as u16, ..Default::default() };
-            let got = unsafe { EnumDisplaySettingsW(PCWSTR(info.DeviceName.as_ptr()), ENUM_CURRENT_SETTINGS, &mut mode) };
-
-            found.push(OutputInfo {
-                adapter: adapter.clone(),
-                output,
-                handle: info.Monitor,
-                id,
-                width: (right - left) as u32,
-                height: (bottom - top) as u32,
-                hz: if got.as_bool() { mode.dmDisplayFrequency } else { 0 },
-                primary,
-                gpu: wide(&desc.Description),
-                driver: driver_version(&adapter),
-                vendor: desc.VendorId,
-            });
-        }
+        found.extend(on_adapter(&adapter));
     }
     found.sort_by_key(|o| !o.primary);
     if found.is_empty() {
@@ -106,11 +74,72 @@ pub fn outputs() -> Result<Vec<OutputInfo>, String> {
     Ok(found)
 }
 
+fn on_adapter(adapter: &IDXGIAdapter1) -> Vec<OutputInfo> {
+    let mut found = Vec::new();
+    let Ok(desc) = (unsafe { adapter.GetDesc1() }) else { return found };
+    for o in 0.. {
+        let Ok(output) = (unsafe { adapter.EnumOutputs(o) }) else { break };
+        let Ok(info) = (unsafe { output.GetDesc() }) else { continue };
+        if !info.AttachedToDesktop.as_bool() {
+            continue;
+        }
+        let Ok(output) = output.cast::<IDXGIOutput1>() else { continue };
+        let RECT { left, top, right, bottom } = info.DesktopCoordinates;
+
+        let mut monitor = MONITORINFOEXW::default();
+        monitor.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
+        let got = unsafe { GetMonitorInfoW(info.Monitor, &mut monitor as *mut _ as *mut MONITORINFO) };
+        let primary = got.as_bool() && monitor.monitorInfo.dwFlags & MONITORINFOF_PRIMARY != 0;
+
+        let id = wide(&info.DeviceName);
+        let mut mode = DEVMODEW { dmSize: size_of::<DEVMODEW>() as u16, ..Default::default() };
+        let got = unsafe { EnumDisplaySettingsW(PCWSTR(info.DeviceName.as_ptr()), ENUM_CURRENT_SETTINGS, &mut mode) };
+
+        found.push(OutputInfo {
+            adapter: adapter.clone(),
+            output,
+            handle: info.Monitor,
+            id,
+            width: (right - left) as u32,
+            height: (bottom - top) as u32,
+            hz: if got.as_bool() { mode.dmDisplayFrequency } else { 0 },
+            primary,
+            gpu: wide(&desc.Description),
+            driver: driver_version(adapter),
+            vendor: desc.VendorId,
+        });
+    }
+    found
+}
+
 /// The chosen monitor, or the primary one if it's blank or has gone away.
 pub fn find(id: &str) -> Result<OutputInfo, String> {
     let mut all = outputs()?;
     let at = all.iter().position(|o| o.id == id).unwrap_or(0);
     Ok(all.swap_remove(at))
+}
+
+pub enum Current {
+    Found(OutputInfo),
+    /// Off, asleep or unplugged.
+    Missing,
+    /// Now on another GPU, or only reachable through a new adapter object, so the device that
+    /// capture and the encoder share has to be made again.
+    Elsewhere,
+}
+
+/// The monitor as Windows has it right now. Handles from an earlier listing go stale when the
+/// display setup changes (a monitor sleeping or waking, a game changing the mode, HDR being
+/// switched), and both capture APIs refuse stale ones, so each attempt to open capture starts
+/// from a fresh one, on the adapter the device was made from.
+pub fn current(adapter: &IDXGIAdapter1, id: &str) -> Current {
+    if let Some(o) = on_adapter(adapter).into_iter().find(|o| o.id == id) {
+        return Current::Found(o);
+    }
+    match outputs() {
+        Ok(all) if all.iter().any(|o| o.id == id) => Current::Elsewhere,
+        _ => Current::Missing,
+    }
 }
 
 #[derive(Clone)]

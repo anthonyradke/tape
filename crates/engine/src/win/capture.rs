@@ -16,7 +16,7 @@ use windows::Graphics::DirectX::DirectXPixelFormat;
 use windows::Graphics::SizeInt32;
 use windows::Win32::Foundation::{E_ACCESSDENIED, POINT};
 use windows::Win32::Graphics::Direct3D11::*;
-use windows::Win32::Graphics::Dxgi::Common::DXGI_SAMPLE_DESC;
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::*;
 use windows::Win32::System::WinRT::Direct3D11::{CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess};
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
@@ -100,7 +100,18 @@ pub struct Duplication {
 
 impl Duplication {
     pub fn open(gfx: &Gfx, output: &OutputInfo, show_cursor: bool) -> Result<Duplication, CaptureError> {
-        let duplication = unsafe { output.output.DuplicateOutput(&gfx.device) }.map_err(|e| {
+        // DuplicateOutput1 also covers HDR desktops, which plain DuplicateOutput refuses, and hands
+        // them over converted to 8-bit. Windows before 1803 only has the plain one.
+        let newer = output
+            .output
+            .cast::<IDXGIOutput5>()
+            .and_then(|o| unsafe { o.DuplicateOutput1(&gfx.device, 0, &[DXGI_FORMAT_B8G8R8A8_UNORM]) });
+        let duplication = match newer {
+            Ok(d) => Ok(d),
+            Err(e) if e.code() == E_ACCESSDENIED => Err(e),
+            Err(_) => unsafe { output.output.DuplicateOutput(&gfx.device) },
+        };
+        let duplication = duplication.map_err(|e| {
             if e.code() == E_ACCESSDENIED {
                 CaptureError::Transient("Capture is paused by a Windows security prompt or the lock screen".into())
             } else {

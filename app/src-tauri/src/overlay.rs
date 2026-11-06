@@ -22,7 +22,7 @@ const KEEP_WARM: Duration = Duration::from_secs(300);
 const PANEL_WIDTH: f64 = 380.0;
 const PANEL_MAX_HEIGHT: f64 = 780.0;
 const PANEL_MARGIN: f64 = 16.0;
-/// Share of the monitor's width the player takes while a clip plays.
+/// Share of the monitor's width the player takes while a clip plays, beside the panel.
 const PLAYER_SHARE: f64 = 0.72;
 
 /// Counts openings, so a timer can tell the overlay has been used since it started.
@@ -71,26 +71,36 @@ fn place(window: &WebviewWindow, x: i32, y: i32, width: u32, height: u32) {
     let _ = window.set_size(PhysicalSize::new(width, height));
 }
 
-/// Against the right edge, centered top to bottom. The monitor can be narrow or turned on its side.
-fn place_panel(app: &AppHandle, window: &WebviewWindow) {
-    let Some(monitor) = monitor(app) else { return };
+/// Where the panel goes: against the right edge, centered top to bottom. The monitor can be narrow
+/// or turned on its side.
+fn panel_rect(monitor: &Monitor) -> (i32, i32, u32, u32) {
     let (at, size, scale) = (monitor.position(), monitor.size(), monitor.scale_factor());
     let margin = (PANEL_MARGIN * scale) as u32;
     let width = ((PANEL_WIDTH * scale) as u32).min(size.width.saturating_sub(margin * 2));
     let height = ((PANEL_MAX_HEIGHT * scale) as u32).min(size.height.saturating_sub(margin * 2));
     let x = at.x + (size.width - width - margin) as i32;
     let y = at.y + ((size.height - height) / 2) as i32;
+    (x, y, width, height)
+}
+
+fn place_panel(app: &AppHandle, window: &WebviewWindow) {
+    let Some(monitor) = monitor(app) else { return };
+    let (x, y, width, height) = panel_rect(&monitor);
     place(window, x, y, width, height);
 }
 
-/// Centered, wide enough to watch a clip, with room for the player's bar.
+/// The panel stays where it is, dimmed, and the window grows to its left to hold the player, with
+/// room for the player's bar. overlay.html lays it out by the panel's width.
 fn place_player(app: &AppHandle, window: &WebviewWindow) {
     let Some(monitor) = monitor(app) else { return };
+    let (panel_x, _, panel_width, panel_height) = panel_rect(&monitor);
     let (at, size, scale) = (monitor.position(), monitor.size(), monitor.scale_factor());
-    let width = (size.width as f64 * PLAYER_SHARE) as u32;
+    let room = (panel_x - at.x) as u32;
+    let player = ((size.width as f64 * PLAYER_SHARE) as u32).min(room.saturating_sub((PANEL_MARGIN * scale) as u32));
     let bar = 54.0 * scale;
-    let height = ((width as f64 * 9.0 / 16.0 + bar) as u32).min((size.height as f64 * 0.9) as u32);
-    place(window, at.x + ((size.width - width) / 2) as i32, at.y + ((size.height - height) / 2) as i32, width, height);
+    let height = ((player as f64 * 9.0 / 16.0 + bar) as u32).min((size.height as f64 * 0.9) as u32).max(panel_height);
+    let y = at.y + ((size.height - height) / 2) as i32;
+    place(window, panel_x - player as i32, y, player + panel_width, height);
 }
 
 /// The panel is too narrow to watch anything in, so it grows while a clip plays.

@@ -215,8 +215,13 @@ body[data-tab="capture"] .gallery.page, body[data-tab="gallery"] .shell { displa
 .card .title { display: block; margin-top: 6px; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card .meta { display: block; color: var(--ink-3); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-/* player */
-.player { position: fixed; inset: 40px 0 0; z-index: 5; display: flex; flex-direction: column; background: #000; }
+/* player: a popup over the dimmed window */
+.scrim { position: fixed; inset: 40px 0 0; z-index: 5; background: rgba(0, 0, 0, .62); }
+.scrim[hidden] { display: none; }
+.player {
+  position: fixed; inset: 64px 32px 24px; z-index: 5; display: flex; flex-direction: column; overflow: hidden;
+  background: #000; border: 1px solid var(--rule-3); border-radius: 4px; box-shadow: 0 18px 60px rgba(0, 0, 0, .6);
+}
 .player[hidden] { display: none; }
 .player-bar { flex: none; display: flex; align-items: center; gap: 6px; padding: 8px 12px; background: var(--chrome); border-bottom: 1px solid var(--rule); }
 .player-info { flex: 1; min-width: 0; }
@@ -251,7 +256,12 @@ body[data-tab="capture"] .gallery.page, body[data-tab="gallery"] .shell { displa
 .overlay-page .game-pick { flex: 1 1 100%; min-width: 0; }
 .overlay-page .gallery-bar .seg { flex: 1; }
 .overlay-page .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 8px; }
-.overlay-page .player { inset: 0; }
+/* While a clip plays the window widens to the left: the panel keeps its place on the right,
+   dimmed, and the player takes the rest. --panel matches PANEL_WIDTH in overlay.rs. */
+.overlay-page { --panel: 380px; }
+.overlay-page.playing { padding-left: calc(100% - var(--panel)); }
+.overlay-page .scrim { inset: 0 0 0 auto; width: var(--panel); }
+.overlay-page .player { inset: 0 var(--panel) 0 0; border-width: 0 1px 0 0; border-radius: 0; box-shadow: none; }
 
 .toast {
   z-index: 6; position: fixed; left: 50%; bottom: 18px; transform: translate(-50%, 8px); max-width: 70%; padding: 8px 14px; border-radius: 3px;

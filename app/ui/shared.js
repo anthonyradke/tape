@@ -441,6 +441,8 @@ const Gallery = (() => {
     $("player-prev").disabled = index === 0;
     $("player-next").disabled = index === list.length - 1;
     player().hidden = false;
+    $("player-scrim").hidden = false;
+    document.body.classList.add("playing");
   }
 
   function renderShare() {
@@ -469,6 +471,8 @@ const Gallery = (() => {
     if (current < 0) return;
     current = -1;
     player().hidden = true;
+    $("player-scrim").hidden = true;
+    document.body.classList.remove("playing");
     const v = video();
     v.pause();
     v.removeAttribute("src");
@@ -486,7 +490,9 @@ const Gallery = (() => {
   function mount(element, onPlayer) {
     box = element;
     if (onPlayer) playerChanged = onPlayer;
-    document.body.insertAdjacentHTML("beforeend", `<div class="player" id="player" hidden role="dialog" aria-label="Player">
+    // A popup over the dimmed page. Clicking the dimmed part closes it.
+    document.body.insertAdjacentHTML("beforeend", `<div class="scrim" id="player-scrim" hidden data-player="close"></div>
+    <div class="player" id="player" hidden role="dialog" aria-modal="true" aria-label="Player">
       <div class="player-bar">
         <div class="player-info"><div class="player-title" id="player-title"></div><div class="player-meta" id="player-meta"></div></div>
         <button class="btn quiet small" id="player-prev" data-player="prev">Newer</button>

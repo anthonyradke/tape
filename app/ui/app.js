@@ -246,6 +246,7 @@ function renderStatus(s) {
 // ---------- tabs ----------
 
 function showTab(name) {
+  Gallery.stop();
   document.body.dataset.tab = name;
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("on", t.dataset.tabName === name));
   if (name === "gallery") return Gallery.load();
@@ -353,6 +354,11 @@ async function listenForKey(button, name) {
   };
   document.addEventListener("keydown", onKey, true);
 }
+
+// Hotkey capture listens first and stops the event, so this only sees a free Esc.
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && Gallery.isOpen()) Gallery.stop();
+});
 
 // ---------- engine events ----------
 

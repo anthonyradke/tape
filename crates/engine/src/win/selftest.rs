@@ -149,6 +149,7 @@ fn check_encode(out: &mut String, settings: &Settings, codec: Codec, label: &str
     let shared = Arc::new(AudioShared {
         system_volume: AtomicU32::new(100),
         mic_volume: AtomicU32::new(100),
+        mic_delay_ms: AtomicU32::new(0),
         system: Mutex::new(None),
         mic: Mutex::new(None),
     });

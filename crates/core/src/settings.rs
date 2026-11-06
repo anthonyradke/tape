@@ -67,6 +67,8 @@ pub struct Settings {
     pub microphone: String,
     pub system_volume: u32,
     pub mic_volume: u32,
+    /// How far the mic is moved earlier, for headsets and mic software that deliver it late.
+    pub mic_delay_ms: u32,
     /// Keep game audio and mic as separate tracks instead of mixing them.
     pub separate_tracks: bool,
     pub hotkeys: Hotkeys,
@@ -95,6 +97,7 @@ impl Default for Settings {
             microphone: NO_DEVICE.into(),
             system_volume: 100,
             mic_volume: 100,
+            mic_delay_ms: 0,
             separate_tracks: false,
             hotkeys: Hotkeys::default(),
             sounds: true,
@@ -105,6 +108,8 @@ impl Default for Settings {
 }
 
 pub const AUDIO_KBPS: u32 = 192;
+/// The mixer waits this much longer for the mic at most, so it's kept short.
+pub const MAX_MIC_DELAY_MS: u32 = 300;
 /// Peak bitrate as a multiple of the target; the encoder runs VBR.
 const PEAK: f64 = 1.5;
 
@@ -117,6 +122,7 @@ impl Settings {
         self.replay_seconds = self.replay_seconds.clamp(5, 3600);
         self.system_volume = self.system_volume.min(200);
         self.mic_volume = self.mic_volume.min(200);
+        self.mic_delay_ms = self.mic_delay_ms.min(MAX_MIC_DELAY_MS);
         if self.resolution != 0 {
             self.resolution = self.resolution.clamp(144, 4320);
         }
@@ -227,6 +233,6 @@ mod tests {
         assert!(!a.video_differs(&Settings { replay_seconds: 30, sounds: false, ..a.clone() }));
         assert!(a.video_differs(&Settings { bitrate_mbps: 10, ..a.clone() }));
         assert!(a.audio_differs(&Settings { microphone: "x".into(), ..a.clone() }));
-        assert!(!a.audio_differs(&Settings { mic_volume: 50, ..a.clone() }));
+        assert!(!a.audio_differs(&Settings { mic_volume: 50, mic_delay_ms: 80, ..a.clone() }));
     }
 }

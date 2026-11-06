@@ -269,6 +269,7 @@ impl Engine {
         }
         self.audio_shared.system_volume.store(new.system_volume, Ordering::Relaxed);
         self.audio_shared.mic_volume.store(new.mic_volume, Ordering::Relaxed);
+        self.audio_shared.mic_delay_ms.store(new.mic_delay_ms, Ordering::Relaxed);
         self.sink.set_replay(new.replay, new.replay_seconds);
         self.settings = new;
         self.reconcile();
@@ -459,6 +460,7 @@ pub fn run(backend: Arc<dyn Backend>, input: impl BufRead + Send + 'static, mut 
         audio_shared: Arc::new(AudioShared {
             system_volume: AtomicU32::new(settings.system_volume),
             mic_volume: AtomicU32::new(settings.mic_volume),
+            mic_delay_ms: AtomicU32::new(settings.mic_delay_ms),
             system: Mutex::new(None),
             mic: Mutex::new(None),
         }),

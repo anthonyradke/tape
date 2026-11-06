@@ -216,8 +216,9 @@ impl AudioInput for Input {
             self.decode(data, frames as usize, silent);
             unsafe { self.capture.ReleaseBuffer(frames) }.map_err(|e| format!("Device lost: {e}"))?;
 
-            // Some drivers leave the timestamp empty on the first packets after a glitch.
-            let at_us = if qpc == 0 {
+            // Some drivers leave the timestamp empty, or flag it as wrong, after a glitch.
+            let bad_time = qpc == 0 || flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32 != 0;
+            let at_us = if bad_time {
                 self.clock.now_us() - frames as i64 * 1_000_000 / self.rate as i64
             } else {
                 (qpc as i64 - self.origin_100ns) / 10

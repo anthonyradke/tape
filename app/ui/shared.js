@@ -134,7 +134,7 @@ document.addEventListener("change", (e) => {
 document.addEventListener("input", (e) => {
   const key = e.target.dataset.range;
   if (!key) return;
-  const unit = key === "bitrateMbps" ? " Mbps" : "%";
+  const unit = key === "bitrateMbps" ? " Mbps" : key === "micDelayMs" ? " ms" : "%";
   $(`n-${key}`).textContent = e.target.value + unit;
 });
 

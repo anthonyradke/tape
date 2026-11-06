@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use tape_core::audio::{add_scaled, limit, peak, to_i16, Timeline, MIX_DELAY};
 use tape_core::ipc::AudioSource;
-use tape_core::packet::{AudioFormat, AAC_FRAME};
-use tape_core::settings::{Settings, NO_DEVICE};
+use tape_core::packet::{AudioFormat, AAC_FRAME, AUDIO_RATE};
+use tape_core::settings::{Settings, MAX_MIC_DELAY_MS, NO_DEVICE};
 
 use crate::backend::{AudioBlock, AudioContext, AudioInput, AudioShared, Backend, Source};
 
@@ -137,9 +137,14 @@ pub fn run(backend: &dyn Backend, settings: &Settings, ctx: &AudioContext) -> Re
         if now - next > MAX_BEHIND {
             next = now - MIX_DELAY;
         }
-        while next + AAC_FRAME as i64 + MIX_DELAY <= now {
+        // A late mic is read from further along its timeline, which means waiting that much longer
+        // for it to arrive.
+        let shift = |c: &Channel| if c.source == Source::Mic { mic_shift(&ctx.shared) } else { 0 };
+        let wait = channels.iter().map(shift).max().unwrap_or(0);
+        while next + AAC_FRAME as i64 + MIX_DELAY + wait <= now {
             for c in &mut channels {
-                c.timeline.pull(next, &mut c.block);
+                let from = next + shift(c);
+                c.timeline.pull(from, &mut c.block);
                 let gain = volume(c.source, &ctx.shared);
                 let level = peak(&c.block) * gain;
                 if let Some(s) = c.status(&ctx.shared).lock().unwrap().as_mut() {
@@ -168,6 +173,12 @@ pub fn run(backend: &dyn Backend, settings: &Settings, ctx: &AudioContext) -> Re
         std::thread::sleep(POLL);
     }
     Ok(())
+}
+
+/// The mic delay setting in samples.
+fn mic_shift(shared: &Arc<AudioShared>) -> i64 {
+    let ms = shared.mic_delay_ms.load(Ordering::Relaxed).min(MAX_MIC_DELAY_MS);
+    ms as i64 * AUDIO_RATE as i64 / 1000
 }
 
 fn volume(source: Source, shared: &Arc<AudioShared>) -> f32 {

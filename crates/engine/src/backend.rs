@@ -69,6 +69,8 @@ pub struct AudioShared {
     /// Percent, live: volume changes need no restart.
     pub system_volume: AtomicU32,
     pub mic_volume: AtomicU32,
+    /// Milliseconds, live like the volumes.
+    pub mic_delay_ms: AtomicU32,
     pub system: Mutex<Option<AudioSource>>,
     pub mic: Mutex<Option<AudioSource>>,
 }

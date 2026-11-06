@@ -43,6 +43,8 @@ function renderSettings() {
     ${row("Microphone", select("microphone", deviceOptions(p.inputs, s.microphone, "Off"), s.microphone))}
     <div class="level"><i id="l-mic"></i></div>
     ${s.microphone ? row("Volume", `<input type="range" data-range="micVolume" min="0" max="200" step="5" value="${s.micVolume}" aria-label="Microphone volume"><span class="num" id="n-micVolume">${s.micVolume}%</span>`) : ""}
+    ${s.microphone ? row("Sync", `<input type="range" data-range="micDelayMs" min="0" max="300" step="10" value="${s.micDelayMs}" aria-label="Microphone sync"><span class="num" id="n-micDelayMs">${s.micDelayMs} ms</span>`) : ""}
+    ${s.microphone ? `<p class="note">If your voice lags behind the video in clips, raise Sync until it lines up. Wireless headsets and mic software like Sonar or Broadcast add delay.</p>` : ""}
     ${s.systemAudio && s.microphone ? row("Separate tracks", toggle("separateTracks", s.separateTracks, "Separate tracks")) : ""}
     ${s.systemAudio && s.microphone && s.separateTracks ? `<p class="note">Good for editing. Most players and Discord only play the first track, so clips sound like game audio alone.</p>` : ""}
   </div>`);

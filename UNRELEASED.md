@@ -1,5 +1,9 @@
 # Unreleased
 
+- New look, the same as Backdrop's, after T3 Code: a nav on the left (Capture, Clips, Settings) with the capture state
+  and version at its foot, a slim header on each page with that page's actions, settings in cards, and one blue
+  accent for the main button. Settings have their own page instead of sharing the window with the status. The Alt+Z
+  panel matches.
 - Capture recovers after the display setup changes (a monitor sleeping or waking, a game switching resolution, HDR being
   turned on or off). Before, both capture methods kept retrying with the monitor as it was when tape started, and failed
   with "Could not capture the given monitor" until tape was restarted. Auto now also goes back to Desktop Duplication

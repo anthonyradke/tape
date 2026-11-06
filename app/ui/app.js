@@ -19,7 +19,7 @@ function renderSettings() {
   const taken = view.hotkeyErrors;
 
   const html = [];
-  html.push(`<div class="group"><span class="cap">Video</span>
+  html.push(`<section class="sec"><h3>Video</h3><div class="card">
     ${monitors.length > 1 ? row("Monitor", select("monitor", monitors, s.monitor)) : ""}
     ${row("Resolution", select("resolution", heights, s.resolution))}
     ${upscaleNote()}
@@ -29,14 +29,14 @@ function renderSettings() {
     ${row("Bitrate", `<input type="range" data-range="bitrateMbps" min="5" max="150" step="5" value="${s.bitrateMbps}" aria-label="Bitrate"><span class="num" id="n-bitrateMbps">${s.bitrateMbps} Mbps</span>`)}
     ${row("Encoder quality", seg("preset", PRESETS, s.preset))}
     ${recording ? `<p class="note warn">Video and audio device changes apply when the recording stops.</p>` : ""}
-  </div>`);
+  </div></section>`);
 
-  html.push(`<div class="group"><span class="cap">Instant replay</span>
+  html.push(`<section class="sec"><h3>Instant replay</h3><div class="card">
     ${row("Keep the last", select("replaySeconds", LENGTHS, s.replaySeconds))}
     <p class="note">Held in memory, never written to disk until you save. Uses up to ${bytes(view.replayRam)} of RAM at this bitrate.</p>
-  </div>`);
+  </div></section>`);
 
-  html.push(`<div class="group"><span class="cap">Audio</span>
+  html.push(`<section class="sec"><h3>Audio</h3><div class="card">
     ${row("Game audio", select("systemAudio", deviceOptions(p.outputs, s.systemAudio, "Off"), s.systemAudio))}
     <div class="level"><i id="l-system"></i></div>
     ${s.systemAudio ? row("Volume", `<input type="range" data-range="systemVolume" min="0" max="200" step="5" value="${s.systemVolume}" aria-label="Game audio volume"><span class="num" id="n-systemVolume">${s.systemVolume}%</span>`) : ""}
@@ -47,32 +47,32 @@ function renderSettings() {
     ${s.microphone ? `<p class="note">If your voice lags behind the video in clips, raise Sync until it lines up. Wireless headsets and mic software like Sonar or Broadcast add delay.</p>` : ""}
     ${s.systemAudio && s.microphone ? row("Separate tracks", toggle("separateTracks", s.separateTracks, "Separate tracks")) : ""}
     ${s.systemAudio && s.microphone && s.separateTracks ? `<p class="note">Good for editing. Most players and Discord only play the first track, so clips sound like game audio alone.</p>` : ""}
-  </div>`);
+  </div></section>`);
 
-  html.push(`<div class="group"><span class="cap">Keys</span>
+  html.push(`<section class="sec"><h3>Keys</h3><div class="card">
     ${KEYS.map(([k, label]) => row(label, `<button class="keycap ${taken.includes(s.hotkeys[k]) ? "taken" : ""}" data-hotkey="${k}">${esc(s.hotkeys[k] || "None")}</button>`)).join("")}
     ${taken.length ? `<p class="note warn">${esc(taken.join(", "))} ${taken.length > 1 ? "are" : "is"} in use by another app.</p>` : ""}
-  </div>`);
+  </div></section>`);
 
-  html.push(`<div class="group"><span class="cap">Files</span>
-    ${row("Save to", `<div class="path" title="${esc(view.folder)}">${esc(view.folder)}</div><button class="btn quiet small" data-act="pick-folder">Change</button>`)}
-  </div>`);
+  html.push(`<section class="sec"><h3>Files</h3><div class="card">
+    ${row("Save to", `<div class="path" title="${esc(view.folder)}">${esc(view.folder)}</div><button class="btn sm press" data-act="pick-folder">Change</button>`)}
+  </div></section>`);
 
   html.push(renderSharing());
 
-  html.push(`<div class="group"><span class="cap">General</span>
+  html.push(`<section class="sec"><h3>General</h3><div class="card">
     ${row("Start with Windows", toggle("autostart", view.autostart, "Start with Windows"))}
     ${row("Sounds", toggle("sounds", s.sounds, "Sounds"))}
     <p class="note">Short tones when a clip saves or something goes wrong, for when a game is covering the screen.</p>
     ${row("Show mouse pointer", toggle("showCursor", s.showCursor, "Show mouse pointer"))}
     ${row("Capture method", select("capture", METHODS, s.capture))}
-    ${row("Problems", `<button class="btn quiet small" data-act="self-test">Run self-test</button><button class="link-btn" data-act="open-log">Open log</button>`)}
+    ${row("Problems", `<button class="btn sm press" data-act="open-log">Open log</button><button class="btn sm press" data-act="self-test">Run self-test</button>`)}
     <p class="note">tape ${esc(view.version)}${p.gpu ? `, ${esc(p.gpu)}` : ""}</p>
-  </div>`);
+  </div></section>`);
 
-  const scroller = $("settings");
+  const scroller = $("settings-scroll");
   const top = scroller.scrollTop;
-  scroller.innerHTML = html.join("");
+  $("settings").innerHTML = html.join("");
   scroller.scrollTop = top;
 }
 
@@ -81,14 +81,14 @@ function renderSharing() {
   const u = Cloud.usage();
   const ready = s.shareServer && s.shareKey;
   const storage = !ready ? "" : u
-    ? row("Cloud storage", `<button class="cloud-chip" data-act="links">${Cloud.ring(u, 22, false)}<span>${bytes(u.used)} of ${bytes(u.free)}</span></button><button class="link-btn" data-act="links">Manage links</button>`)
-    : row("Cloud storage", `<span class="dim-text">Not reached yet</span><button class="link-btn" data-act="links-retry">Try again</button>`);
-  return `<div class="group"><span class="cap">Sharing</span>
+    ? row("Cloud storage", `<button class="cloud-chip" data-act="links">${Cloud.ring(u, 22, false)}<span>${bytes(u.used)} of ${bytes(u.free)}</span></button><button class="btn sm press" data-act="links">Manage links</button>`)
+    : row("Cloud storage", `<span class="dim-text">Not reached yet</span><button class="btn sm press" data-act="links-retry">Try again</button>`);
+  return `<section class="sec"><h3>Sharing</h3><div class="card">
     ${row("Share server", `<input type="text" class="text" data-key="shareServer" value="${esc(s.shareServer)}" placeholder="https://tape-clips.example.workers.dev" spellcheck="false" aria-label="Share server">`)}
     ${row("Upload key", `<input type="password" class="text" data-key="shareKey" value="${esc(s.shareKey)}" placeholder="From your share server" aria-label="Upload key">`)}
     ${storage}
     <p class="note">Copy link uploads a smaller 1080p copy to your own Cloudflare server. ${u ? `Links work for ${u.linkDays} days, then delete themselves.` : "Links delete themselves after a few days."} Setting one up: share/README.md in tape's repository.</p>
-  </div>`;
+  </div></section>`;
 }
 
 function renderLinks() {
@@ -106,11 +106,11 @@ function renderClips() {
   const list = $("clips");
   if (!view.clips.length) {
     const key = view.settings.hotkeys.saveClip || "the save key";
-    list.innerHTML = `<div class="empty">Nothing saved yet. Press ${esc(key)} during a game to keep the last ${esc((LENGTHS.find(([v]) => v === view.settings.replaySeconds) || [0, "few minutes"])[1])}.</div>`;
+    list.innerHTML = `<div class="empty-row">Nothing saved yet. Press ${esc(key)} during a game to keep the last ${esc((LENGTHS.find(([v]) => v === view.settings.replaySeconds) || [0, "few minutes"])[1])}.</div>`;
     return;
   }
   list.innerHTML = view.clips
-    .map((c) => `<button class="clip" data-open="${esc(c.path)}" title="Play. Right-click to show in folder."><span class="name">${esc(c.game)}${c.kind === "recording" ? " recording" : ""}</span><span class="size">${bytes(c.bytes)}</span><span class="when">${when(c.modified)}</span></button>`)
+    .map((c) => `<button class="clip" data-open="${esc(c.path)}" title="Play. Right-click to show in folder."><span class="name">${esc(c.game)}${c.kind === "recording" ? ` <span class="tag">Recording</span>` : ""}</span><span class="when">${when(c.modified)}</span><span class="size">${bytes(c.bytes)}</span></button>`)
     .join("");
 }
 
@@ -122,7 +122,7 @@ function renderAlerts() {
   if (view.overlayRunning) out.push(`<div class="alert"><b>The NVIDIA overlay is running.</b> Turn it off in the NVIDIA app so it stops recording in the background and lets go of the same hotkeys, Alt+Z included.</div>`);
   const u = Cloud.usage();
   if (u && u.used / u.free >= 0.8) {
-    out.push(`<div class="alert"><b>Cloud storage is ${Math.round((u.used / u.free) * 100)}% full.</b> ${bytes(u.used)} of the free ${bytes(u.free)}. ${u.used >= u.cap ? "New links are refused until some expire or you delete them." : "Delete links you're done with to make room."} <button class="link-btn" data-act="links">Manage links</button></div>`);
+    out.push(`<div class="alert"><b>Cloud storage is ${Math.round((u.used / u.free) * 100)}% full.</b> ${bytes(u.used)} of the free ${bytes(u.free)}. ${u.used >= u.cap ? "New links are refused until some expire or you delete them." : "Delete links you're done with to make room."} <button class="link" data-act="links">Manage links</button></div>`);
   }
   if (h.engineRestarts > 0) out.push(`<div class="alert">Recovered ${h.engineRestarts === 1 ? "once" : `${h.engineRestarts} times`} since starting. Last: ${esc(h.lastRestart || "unknown")}.</div>`);
   $("alerts").innerHTML = out.join("");
@@ -134,7 +134,7 @@ function renderKeys() {
   $("k-rec").textContent = k.toggleRecording;
 }
 
-// Always in the title bar: a quiet icon that checks for updates, which turns into a labelled
+// Always at the foot of the nav: the version, which that checks for updates, which turns into a labelled
 // button when a new version is waiting, and shows the download while it installs.
 function renderUpdate() {
   const el = $("upd");
@@ -151,14 +151,16 @@ function renderUpdate() {
   } else if (upd.available) {
     cls = "ready";
     title = `Update to tape ${upd.available} and restart. Your settings and clips stay. Instant replay starts over.${upd.notes ? `\n\n${upd.notes}` : ""}`;
-    html = `${ICON_DOWNLOAD}<span>Update</span>`;
+    html = `${ICON_DOWNLOAD}<span>Update to ${esc(upd.available)}</span>`;
   } else if (upd.checking) {
     cls = "spin";
     title = "Checking for updates…";
+    html = `${ICON_UPDATE}<span>Checking…</span>`;
   } else {
     title = `Check for updates (tape ${upd.current})`;
+    html = `${ICON_UPDATE}<span>tape ${esc(upd.current)}</span>`;
   }
-  el.className = `tb-upd ${cls}`;
+  el.className = `nav-upd press ${cls}`;
   el.disabled = upd.progress != null;
   el.title = title;
   el.setAttribute("aria-label", title);
@@ -201,8 +203,10 @@ function renderStatus(s) {
   view.status = s;
   const light = view.health.light;
   const state = $("tb-state");
-  state.className = `tb-state ${light}`;
-  state.textContent = { idle: "Off", replay: "Instant replay on", recording: "Recording", trouble: view.health.problem || "Not capturing" }[light];
+  const said = { idle: "Off", replay: "Instant replay on", recording: "Recording", trouble: view.health.problem || "Not capturing" }[light];
+  state.className = `nav-status ${light}`;
+  state.title = said;
+  state.innerHTML = `<i class="dot"></i><span>${esc(said)}</span>`;
 
   const replay = $("p-replay");
   if (!s.replayOn) {
@@ -232,7 +236,7 @@ function renderStatus(s) {
 
   $("b-clip").disabled = !s.replayOn;
   const button = $("b-rec");
-  button.className = s.recording ? "btn big quiet stop" : "btn big quiet";
+  button.className = s.recording ? "btn big press stop" : "btn big press";
   $("b-rec-text").textContent = s.recording ? "Stop recording" : "Start recording";
 
   const level = (id, source) => {
@@ -248,7 +252,7 @@ function renderStatus(s) {
 function showTab(name) {
   Gallery.stop();
   document.body.dataset.tab = name;
-  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("on", t.dataset.tabName === name));
+  document.querySelectorAll(".nav-tab").forEach((t) => t.classList.toggle("on", t.dataset.tabName === name));
   if (name === "gallery") return Gallery.load();
 }
 

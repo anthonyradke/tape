@@ -9,21 +9,21 @@ let openedAt = Date.now();
 function render() {
   if (document.activeElement?.matches?.("input[type=range]")) return; // don't move a slider in use
   const { settings: s, probe: p, status } = view;
-  $("ov-settings").innerHTML = `<div class="group"><span class="cap">Video</span>
+  $("ov-settings").innerHTML = `<section class="sec"><h3>Video</h3><div class="card">
       ${row("Resolution", select("resolution", heightOptions(), s.resolution))}
       ${upscaleNote()}
       ${row("Frame rate", select("fps", FPS.map((f) => [f, `${f} fps`]), s.fps))}
       ${row("Bitrate", range("bitrateMbps", 5, 150, 5, " Mbps", "Bitrate"))}
       ${status.recording ? `<p class="note warn">Applies when the recording stops.</p>` : ""}
-    </div>
-    <div class="group"><span class="cap">Instant replay</span>
+    </div></section>
+    <section class="sec"><h3>Instant replay</h3><div class="card">
       ${row("Keep the last", select("replaySeconds", LENGTHS, s.replaySeconds))}
-    </div>
-    <div class="group"><span class="cap">Audio</span>
+    </div></section>
+    <section class="sec"><h3>Audio</h3><div class="card">
       ${row("Game audio", select("systemAudio", deviceOptions(p.outputs, s.systemAudio, "Off"), s.systemAudio))}
       ${row("Microphone", select("microphone", deviceOptions(p.inputs, s.microphone, "Off"), s.microphone))}
-    </div>
-    <div class="ov-more"><button class="link-btn" data-act="settings">All settings</button></div>`;
+    </div></section>
+    <div class="ov-more"><button class="btn sm ghost press" data-act="settings">All settings</button></div>`;
   $("k-clip").textContent = s.hotkeys.saveClip;
   $("k-rec").textContent = s.hotkeys.toggleRecording;
   renderReplaySwitch();
@@ -34,8 +34,10 @@ function renderStatus(s) {
   view.status = s;
   const light = view.health.light;
   const state = $("tb-state");
-  state.className = `tb-state ${light}`;
-  state.textContent = { idle: "Off", replay: "Instant replay on", recording: "Recording", trouble: view.health.problem || "Not capturing" }[light];
+  const said = { idle: "Off", replay: "Instant replay on", recording: "Recording", trouble: view.health.problem || "Not capturing" }[light];
+  state.className = `nav-status ${light}`;
+  state.title = said;
+  state.innerHTML = `<i class="dot"></i><span>${esc(said)}</span>`;
   $("ov-game").innerHTML = `Saving to <b>${esc(s.game || "Desktop")}</b>`;
 
   const replay = $("p-replay");
@@ -55,7 +57,7 @@ function renderStatus(s) {
 
   $("b-clip").disabled = !s.replayOn;
   $("b-clip-text").textContent = s.replayOn ? `Save last ${clock(Math.min(s.clipSeconds, s.replayTarget))}` : "Save clip";
-  $("b-rec").className = s.recording ? "btn big quiet stop" : "btn big quiet";
+  $("b-rec").className = s.recording ? "btn big press stop" : "btn big press";
   $("b-rec-text").textContent = s.recording ? "Stop recording" : "Start recording";
 }
 

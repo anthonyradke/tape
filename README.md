@@ -42,7 +42,7 @@ OBS or ffmpeg underneath. It was written after the NVIDIA app's instant replay k
 
 <p align="center">
   <img src="docs/gallery.png" width="49%" alt="The gallery, with thumbnails of saved clips">
-  <img src="docs/home.png" width="49%" alt="The main window, with status, recent clips and settings">
+  <img src="docs/home.png" width="49%" alt="The main window, with replay and recording status, the save and record buttons, and recent clips">
 </p>
 
 ## Requirements
@@ -167,8 +167,6 @@ own process, because a process can only duplicate an output once and replay stay
 ## Credits
 
 The NVENC bindings are generated from [nv-codec-headers](https://git.videolan.org/?p=ffmpeg/nv-codec-headers.git).
-The [Archivo](https://github.com/Omnibus-Type/Archivo) font is under the SIL Open Font License, included as
-`app/ui/fonts/OFL.txt`.
 
 ## License
 

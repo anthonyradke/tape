@@ -196,8 +196,8 @@ const Cloud = (() => {
       .map((l) => `<div class="link-row">
           <div class="link-info"><div class="link-name" title="${esc(l.name)}">${esc(l.name.replace(/\.(DVR\.)?mp4$/i, ""))}</div>
           <div class="link-meta">${bytes(l.bytes)} · expires in ${left(l.expires)}</div></div>
-          <button class="btn quiet small" data-link-copy="${esc(l.url)}">Copy link</button>
-          <button class="btn quiet small" data-link-delete="${esc(l.id)}">Delete</button>
+          <button class="btn sm press" data-link-copy="${esc(l.url)}">Copy link</button>
+          <button class="btn sm ghost danger press" data-link-delete="${esc(l.id)}">Delete</button>
         </div>`)
       .join("");
   }
@@ -320,7 +320,7 @@ const Gallery = (() => {
     return link ? `<span class="shared" title="Shared. The link works for ${Cloud.left(link.expires)} more.">Link · ${Cloud.left(link.expires)}</span>` : "";
   }
 
-  const card = (c) => `<button class="card" data-play="${esc(c.path)}" title="${esc(c.name)}">
+  const card = (c) => `<button class="tile" data-play="${esc(c.path)}" title="${esc(c.name)}">
       <span class="thumb">${c.thumb ? `<img src="${esc(convertFileSrc(c.thumb))}" alt="" loading="lazy">` : ""}
         ${c.seconds != null ? `<span class="length">${clock(c.seconds)}</span>` : ""}
         ${c.kind === "recording" ? `<span class="kind">Recording</span>` : ""}
@@ -339,12 +339,13 @@ const Gallery = (() => {
     if (!box) return;
     const list = shown();
     const empty = clips.length ? "Nothing here matches." : "Nothing saved yet. Clips show up here as soon as you save them.";
-    box.innerHTML = `<div class="gallery-bar">
-        <div class="cap">Gallery</div>
+    box.innerHTML = `<header class="top gallery-bar" data-tauri-drag-region>
+        <h1 data-tauri-drag-region>Clips<span class="count">${clips.length || ""}</span></h1>
+        <div class="sp" data-tauri-drag-region></div>
         ${cloudChip()}
         <select class="game-pick" aria-label="Game">${gameOptions().map(([v, label]) => `<option value="${esc(v)}" ${v === game ? "selected" : ""}>${esc(label)}</option>`).join("")}</select>
         <div class="seg">${KINDS.map(([v, label]) => `<button data-kind="${v}" class="${v === kind ? "on" : ""}">${label}</button>`).join("")}</div>
-      </div>
+      </header>
       <div class="grid">${list.length ? list.map(card).join("") : `<div class="empty">${empty}</div>`}</div>`;
   }
 
@@ -459,7 +460,7 @@ const Gallery = (() => {
     if (chip) chip.outerHTML = cloudChip() || "<span></span>";
     else if (box && Cloud.usage()) box.querySelector(".gallery-bar .cap")?.insertAdjacentHTML("afterend", cloudChip());
     // Badges only; a full redraw would restart thumbnails that are loading.
-    if (box) for (const el of box.querySelectorAll(".card")) {
+    if (box) for (const el of box.querySelectorAll(".tile")) {
       const c = clips.find((x) => x.path === el.dataset.play);
       const thumb = el.querySelector(".thumb");
       thumb?.querySelector(".shared")?.remove();
@@ -495,12 +496,12 @@ const Gallery = (() => {
     <div class="player" id="player" hidden role="dialog" aria-modal="true" aria-label="Player">
       <div class="player-bar">
         <div class="player-info"><div class="player-title" id="player-title"></div><div class="player-meta" id="player-meta"></div></div>
-        <button class="btn quiet small" id="player-prev" data-player="prev">Newer</button>
-        <button class="btn quiet small" id="player-next" data-player="next">Older</button>
-        <button class="btn small" id="player-share" data-player="share">Copy link</button>
-        <button class="btn quiet small" data-player="reveal">Show in folder</button>
-        <button class="btn quiet small" data-player="external">Open with default app</button>
-        <button class="btn small" data-player="close">Close</button>
+        <button class="btn sm press" id="player-prev" data-player="prev">Newer</button>
+        <button class="btn sm press" id="player-next" data-player="next">Older</button>
+        <button class="btn sm ghost press" data-player="reveal">Show in folder</button>
+        <button class="btn sm ghost press" data-player="external">Open with default app</button>
+        <button class="btn sm pri press" id="player-share" data-player="share">Copy link</button>
+        <button class="btn sm ghost icon press" data-player="close" title="Close (Esc)" aria-label="Close"><svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
       </div>
       <video id="player-video" controls></video>
       <div class="player-note" id="player-note" hidden>This video can't play here, usually because Windows is missing the format's codec. It should still open in your default app or in a browser.</div>

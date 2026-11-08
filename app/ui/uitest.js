@@ -57,6 +57,48 @@
     return out;
   }
 
+  // Trims the recording, then stars, renames and deletes the copy, on real files.
+  async function library(source) {
+    const out = {};
+    const find = async (path) => (await invoke("clips")).find((c) => c.path === path);
+    const info = await invoke("clip_info", { path: source });
+    out.keyframes = info.keyframes.length;
+    out.duration = info.duration;
+    // From just after the second keyframe, so the start has to snap back to it.
+    const start = info.keyframes[1] + 0.1;
+    const trimmed = await invoke("trim_clip", { path: source, start, end: info.duration - 0.2 });
+    out.trimmedName = trimmed.split(/[\\/]/).pop();
+    const copy = await find(trimmed);
+    out.trimmedKind = copy?.kind;
+    out.trimmed = copy ? await checkVideo(copy) : null;
+    out.expectedSeconds = info.duration - 0.2 - info.keyframes[1];
+
+    await invoke("star_clip", { path: trimmed, on: true });
+    out.starred = !!(await find(trimmed))?.starred;
+    const renamed = await invoke("rename_clip", { path: trimmed, name: "renamed by the test" });
+    out.renamedName = renamed.split(/[\\/]/).pop();
+    const after = await find(renamed);
+    out.renamedStarred = !!after?.starred;
+    out.renamedThumb = !!after?.thumb;
+    out.oldNameGone = !(await find(trimmed));
+    // The copy and the recording share an ending, so taking the recording's name has to fail.
+    try {
+      await invoke("rename_clip", { path: renamed, name: source.split(/[\\/]/).pop().replace(/\.mp4$/i, "") });
+      out.clashRefused = false;
+    } catch {
+      out.clashRefused = true;
+    }
+    await invoke("delete_clip", { path: renamed });
+    out.afterDelete = (await invoke("clips")).length;
+    try {
+      await invoke("delete_clip", { path: "C:\\Windows\\win.ini" });
+      out.outsideRefused = false;
+    } catch {
+      out.outsideRefused = true;
+    }
+    return out;
+  }
+
   try {
     for (let i = 0; i < 100 && !(view.status.replaySeconds > 3); i++) {
       await sleep(200);
@@ -78,6 +120,8 @@
     for (const clip of clips) results.clips.push(await checkVideo(clip));
     const again = await invoke("clips");
     results.thumbsListed = again.filter((c) => c.thumb && c.seconds > 0).length;
+
+    results.library = await library(results.recordingPath);
 
     results.overlayOpen = await invoke("ui_test_overlay");
     results.overlayClosed = await invoke("ui_test_overlay");

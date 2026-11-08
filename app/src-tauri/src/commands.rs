@@ -44,6 +44,7 @@ pub struct ClipFile {
     key: String,
     thumb: Option<String>,
     seconds: Option<f64>,
+    starred: bool,
 }
 
 #[derive(Serialize)]
@@ -113,6 +114,7 @@ fn add_clips(dir: &Path, game: &str, known: &HashMap<String, (PathBuf, f64)>, cl
             thumb: thumb.map(|(p, _)| p.display().to_string()),
             seconds: thumb.map(|(_, s)| *s),
             path: path.display().to_string(),
+            starred: false,
             game: game.to_string(),
             bytes: meta.len(),
             modified,
@@ -124,7 +126,9 @@ fn add_clips(dir: &Path, game: &str, known: &HashMap<String, (PathBuf, f64)>, cl
 
 /// Everything saved, newest first: the clips folder and one level of game folders. Skips the
 /// recording in progress, which isn't a finished video yet.
-fn all_clips(shared: &Shared) -> Vec<ClipFile> {
+fn all_clips(app: &AppHandle) -> Vec<ClipFile> {
+    let shared = app.state::<Shared>();
+    let stars = app.state::<crate::library::Stars>();
     let folder = shared.folder();
     let known = thumbnails(&shared.thumbnails);
     let mut clips = Vec::new();
@@ -136,6 +140,9 @@ fn all_clips(shared: &Shared) -> Vec<ClipFile> {
     }
     let writing = shared.status.lock().unwrap().recording_path.clone();
     clips.retain(|c| Some(&c.path) != writing.as_ref());
+    for c in &mut clips {
+        c.starred = stars.has(&c.path);
+    }
     clips.sort_by_key(|c| std::cmp::Reverse(c.modified));
     clips
 }
@@ -152,7 +159,7 @@ pub fn allow_media(app: &AppHandle) {
 
 #[tauri::command]
 pub fn clips(app: AppHandle) -> Vec<ClipFile> {
-    all_clips(&app.state::<Shared>())
+    all_clips(&app)
 }
 
 /// `key` comes from the webview, so it has to look like one before it goes in a path.
@@ -203,7 +210,7 @@ pub fn view(app: AppHandle) -> View {
     let shared = app.state::<Shared>();
     let settings = shared.settings.lock().unwrap().clone();
     let folder = shared.folder();
-    let mut clips = all_clips(&shared);
+    let mut clips = all_clips(&app);
     clips.truncate(RECENT);
     let view = View {
         replay_ram: settings.replay_ram_bytes(),

@@ -98,8 +98,7 @@ document.addEventListener("click", (e) => {
 document.addEventListener("contextmenu", (e) => e.preventDefault());
 
 function escape() {
-  if (Gallery.isOpen()) Gallery.stop();
-  else hide();
+  if (!Gallery.escape()) hide();
 }
 
 // Esc comes from the app as a global key, since the game keeps the keyboard. The keydown is for
@@ -125,6 +124,7 @@ listen("saved", (e) => {
 listen("overlay-shown", opened);
 listen("overlay-hidden", () => Gallery.stop());
 
-Gallery.mount($("gallery"), (open) => invoke("overlay_player", { open }));
+// No renaming here: typing would need the keyboard the game is holding.
+Gallery.mount($("gallery"), (open) => invoke("overlay_player", { open }), { rename: false });
 Cloud.load(false);
 opened();

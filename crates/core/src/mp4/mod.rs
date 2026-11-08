@@ -7,6 +7,7 @@
 
 mod boxes;
 pub mod faststart;
+pub mod trim;
 pub mod codec;
 mod writer;
 

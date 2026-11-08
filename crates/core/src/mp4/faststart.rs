@@ -10,14 +10,14 @@ use std::path::Path;
 /// Boxes whose children hold the chunk offset tables.
 const CONTAINERS: [&[u8; 4]; 5] = [b"moov", b"trak", b"mdia", b"minf", b"stbl"];
 /// A `moov` larger than this isn't one of ours, so nothing gets read into memory blindly.
-const MAX_MOOV: u64 = 64 << 20;
+pub(crate) const MAX_MOOV: u64 = 64 << 20;
 
 fn invalid(what: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.to_string())
 }
 
 /// Top-level boxes as (type, start, length).
-fn top_level(file: &mut File) -> io::Result<Vec<([u8; 4], u64, u64)>> {
+pub(crate) fn top_level(file: &mut File) -> io::Result<Vec<([u8; 4], u64, u64)>> {
     let end = file.metadata()?.len();
     let mut boxes = Vec::new();
     let mut at = 0;

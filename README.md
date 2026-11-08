@@ -30,7 +30,10 @@ OBS or ffmpeg underneath. It was written after the NVIDIA app's instant replay k
 - Output at the monitor's resolution, scaled down, or upscaled to 1440p or 4K on a smaller monitor.
 - Game audio from any output device and a microphone from any input device, mixed or on separate tracks.
 - A side panel over the game on Alt+Z with replay, recording, common settings and recent clips.
-- A gallery with thumbnails and a built-in player, filtered by game.
+- A gallery with thumbnails and a built-in player, filtered by game or by starred clips.
+- Trimming in the player without re-encoding. The cut is saved as a new file beside the original and starts on the
+  keyframe at or before the chosen point, at most two seconds early with tape's own clips.
+- Starring, renaming and deleting from the player. Deleted clips go to the Recycle Bin.
 - Copy link: uploads a 1080p H.264 copy of a clip to a self-hosted Cloudflare Worker and copies a link that plays
   in a browser and embeds in chat apps, then expires after 7 days. Storage use against R2's free 10 GB is shown in
   the app. See [share/README.md](share/README.md).
@@ -126,11 +129,11 @@ builds the app without one.
 
 | What | How it's tested |
 |---|---|
-| MP4 output for all three codecs, crash recovery, audio sync | `cargo test -p tape-core`, decoded by ffmpeg |
+| MP4 output for all three codecs, crash recovery, audio sync, trimming | `cargo test -p tape-core`, decoded by ffmpeg |
 | Engine behavior: clips, recording, restarts, hangs, device loss | `cargo test -p tape-engine`, a real process on a fake backend |
 | D3D11, both capture APIs, pointer shaders, AAC | `tape --self-test report.txt` on a Windows CI runner |
 | The shared-link copy: scaling, frame dropping, H.264 and AAC | `tape --share-copy` on a Windows CI runner, decoded by ffmpeg |
-| Playback, seeking and thumbnails in WebView2, overlay window | The real app on the fake engine on a Windows CI runner, driven by `app/ui/uitest.js` |
+| Playback, seeking and thumbnails in WebView2, trim, rename and delete on real files, overlay window | The real app on the fake engine on a Windows CI runner, driven by `app/ui/uitest.js` |
 | NVENC, video processor, WASAPI | The self-test on a machine with an NVIDIA GPU, from Settings > Run self-test |
 
 `tape --self-test <file> [settings.json]` runs each stage of the pipeline and writes a plain text report, including
@@ -141,7 +144,7 @@ own process, because a process can only duplicate an output once and replay stay
 
 | Path | Contents |
 |---|---|
-| `crates/core/src/mp4/` | Hand-written MP4: hybrid recordings and `moov`-first clips |
+| `crates/core/src/mp4/` | Hand-written MP4: hybrid recordings, `moov`-first clips, lossless trimming |
 | `crates/core/src/game.rs` | Game detection from Steam manifests and store folders |
 | `crates/engine/src/win/` | Capture, video processor, NVENC, WASAPI, AAC, self-test |
 | `app/src-tauri/src/supervisor.rs` | Starts, watches and replaces the engine |

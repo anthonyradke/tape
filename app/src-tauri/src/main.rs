@@ -3,6 +3,7 @@
 mod commands;
 mod cue;
 mod hotkeys;
+mod library;
 mod overlay;
 mod share;
 mod state;
@@ -75,6 +76,7 @@ fn main() {
             let (shared, first_run) = state::Shared::load(handle);
             app.manage(shared);
             app.manage(share::Shares::default());
+            app.manage(library::Stars::load(handle));
             commands::allow_media(handle);
             if first_run {
                 // Replay is only useful if it's already running when something happens.
@@ -120,6 +122,11 @@ fn main() {
             share::share_usage,
             share::unshare,
             share::copy_text,
+            library::clip_info,
+            library::trim_clip,
+            library::delete_clip,
+            library::rename_clip,
+            library::star_clip,
         ])
         .build(tauri::generate_context!())
         .expect("failed to start")

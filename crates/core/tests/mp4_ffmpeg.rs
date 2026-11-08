@@ -27,6 +27,13 @@ fn tmp(name: &str) -> PathBuf {
     dir.join(name)
 }
 
+/// A name no other test running at the same time will use.
+fn scratch(ext: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    tmp(&format!("scratch-{}.{ext}", NEXT.fetch_add(1, Ordering::Relaxed)))
+}
+
 fn ffmpeg(args: &[&str]) {
     let out = Command::new("ffmpeg").args(["-v", "error", "-y"]).args(args).output().unwrap();
     assert!(out.status.success(), "ffmpeg {args:?}: {}", String::from_utf8_lossy(&out.stderr));
@@ -40,7 +47,7 @@ fn encode(codec: Codec) -> Vec<Vec<u8>> {
     let common = ["-f", "lavfi", "-i", &source, "-frames:v", &frames, "-pix_fmt", "yuv420p", "-g", &gop];
     match codec {
         Codec::H264 => {
-            let path = tmp("v.h264");
+            let path = scratch("h264");
             let p = path.to_str().unwrap();
             let mut a = common.to_vec();
             a.extend(["-c:v", "libx264", "-bf", "0", "-preset", "veryfast", "-bsf:v", "h264_metadata=aud=insert", "-f", "h264", p]);
@@ -48,7 +55,7 @@ fn encode(codec: Codec) -> Vec<Vec<u8>> {
             split_annexb(&fs::read(&path).unwrap(), |nal| nal[0] & 0x1f == 9)
         }
         Codec::Hevc => {
-            let path = tmp("v.hevc");
+            let path = scratch("hevc");
             let p = path.to_str().unwrap();
             let mut a = common.to_vec();
             a.extend(["-c:v", "libx265", "-x265-params", "bframes=0:log-level=error:keyint=60:min-keyint=60:repeat-headers=1", "-bsf:v", "hevc_metadata=aud=insert", "-f", "hevc", p]);
@@ -56,7 +63,7 @@ fn encode(codec: Codec) -> Vec<Vec<u8>> {
             split_annexb(&fs::read(&path).unwrap(), |nal| (nal[0] >> 1) & 0x3f == 35)
         }
         Codec::Av1 => {
-            let path = tmp("v.ivf");
+            let path = scratch("ivf");
             let p = path.to_str().unwrap();
             let mut a = common.to_vec();
             a.extend(["-c:v", "libsvtav1", "-preset", "10", "-svtav1-params", "lookahead=0:tune=0:pred-struct=1:keyint=60:irefresh-type=2", "-f", "ivf", p]);
@@ -91,7 +98,7 @@ fn split_ivf(data: &[u8]) -> Vec<Vec<u8>> {
 }
 
 fn aac_frames() -> Vec<Vec<u8>> {
-    let path = tmp("a.aac");
+    let path = scratch("aac");
     ffmpeg(&["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "6", "-ac", "2", "-c:a", "aac", "-b:a", "192k", "-f", "adts", path.to_str().unwrap()]);
     let data = fs::read(&path).unwrap();
     let mut out = Vec::new();
@@ -344,4 +351,143 @@ fn faststart_moves_the_index_without_changing_a_frame() {
     // Already in order: left alone.
     assert!(!faststart(&path).unwrap());
     assert_eq!(frame_hashes(&path), hashes);
+}
+
+/// Hashes of one stream's decoded frames, in order.
+fn stream_hashes(path: &Path, stream: usize) -> Vec<String> {
+    frame_hashes(path)
+        .lines()
+        .filter(|l| l.split(',').next().map(str::trim) == Some(&stream.to_string()))
+        .map(|l| l.rsplit(',').next().unwrap().trim().to_string())
+        .collect()
+}
+
+fn first_pts(path: &Path, stream: &str) -> f64 {
+    let out = Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", stream, "-read_intervals", "%+#1", "-show_entries", "frame=pts_time", "-of", "csv=p=0"])
+        .arg(path)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().trim_end_matches(',').parse().unwrap()
+}
+
+fn duration_of(path: &Path) -> f64 {
+    probe(path)["format"]["duration"].as_str().unwrap().parse().unwrap()
+}
+
+/// Trims each of tape's own layouts and checks every kept frame is bit-identical to the original's.
+fn check_trim(codec: Codec, name: &str) {
+    if !have_ffmpeg() {
+        return;
+    }
+    use tape_core::mp4::trim::{info, trim};
+    let (tracks, packets) = stream(codec, 2, 400);
+    for (layout, path) in [("clip", tmp(&format!("{name}-trim-src-clip.mp4"))), ("recording", tmp(&format!("{name}-trim-src-rec.mp4")))] {
+        if layout == "clip" {
+            clip(&path, &tracks, &packets);
+        } else {
+            record(&path, &tracks, &packets, true);
+        }
+        let i = info(&path).unwrap();
+        assert_eq!(i.keyframes, [0.0, 1.0, 2.0, 3.0, 4.0], "{layout}");
+        assert!((i.duration - 5.0).abs() < 0.02, "{layout} duration {}", i.duration);
+
+        let out = tmp(&format!("{name}-trimmed-{layout}.mp4"));
+        // Starts on the keyframe at 1 s, ends before the frame at 3.7 s.
+        let (begin, end) = trim(&path, &out, 1.3, 3.7).unwrap();
+        assert_eq!(begin, 1.0);
+        assert!((end - 3.7).abs() < 0.02, "end {end}");
+        assert_eq!(top_level_boxes(&out), ["ftyp", "moov", "mdat"]);
+        decode_clean(&out);
+        let info_out = probe(&out);
+        assert_eq!(frames_of(&info_out, "video"), [162], "{layout}");
+        assert_eq!(frames_of(&info_out, "audio").len(), 2, "{layout}");
+        assert!((duration_of(&out) - 2.7).abs() < 0.03, "{layout} duration {}", duration_of(&out));
+        assert_eq!(stream_hashes(&out, 0), stream_hashes(&path, 0)[60..222], "{layout} frames differ");
+        let audio = first_pts(&out, "a:0");
+        assert!(audio.abs() < 0.03, "{layout} audio starts at {audio}");
+        assert!(first_pts(&out, "v:0").abs() < 0.001);
+    }
+}
+
+#[test]
+fn trimming_h264_keeps_frames_exact() {
+    check_trim(Codec::H264, "h264");
+}
+
+#[test]
+fn trimming_hevc_keeps_frames_exact() {
+    check_trim(Codec::Hevc, "hevc");
+}
+
+#[test]
+fn trimming_av1_keeps_frames_exact() {
+    check_trim(Codec::Av1, "av1");
+}
+
+/// Audio that started half a second after the video stays half a second in when the cut keeps it,
+/// and lines up exactly with the video when the cut starts after it.
+#[test]
+fn trimming_keeps_late_audio_in_sync() {
+    if !have_ffmpeg() {
+        return;
+    }
+    use tape_core::mp4::trim::trim;
+    let (tracks, packets) = stream(Codec::H264, 1, 24_000);
+    let path = tmp("trim-late.mp4");
+    clip(&path, &tracks, &packets);
+    let out = tmp("trim-late-0.mp4");
+    trim(&path, &out, 0.0, 3.0).unwrap();
+    let at = first_pts(&out, "a:0");
+    assert!((at - 0.5).abs() < 0.03, "audio starts at {at}");
+    let out = tmp("trim-late-2.mp4");
+    trim(&path, &out, 2.0, 4.0).unwrap();
+    // The audio frame playing at 2 s started up to 21 ms before it, and the edit list skips that.
+    let at = first_pts(&out, "a:0");
+    assert!(at.abs() < 0.025, "audio starts at {at}");
+    decode_clean(&out);
+}
+
+/// Files from other muxers, like the NVIDIA app's: B-frames, an edit list and AAC priming.
+#[test]
+fn trimming_a_file_with_b_frames() {
+    if !have_ffmpeg() {
+        return;
+    }
+    use tape_core::mp4::trim::{info, trim};
+    let path = tmp("trim-bframes.mp4");
+    ffmpeg(&[
+        "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=60", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+        "-t", "6", "-c:v", "libx264", "-bf", "3", "-g", "120", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac",
+        path.to_str().unwrap(),
+    ]);
+    let i = info(&path).unwrap();
+    assert_eq!(i.keyframes, [0.0, 2.0, 4.0]);
+    let out = tmp("trim-bframes-out.mp4");
+    let (begin, _) = trim(&path, &out, 2.5, 5.0).unwrap();
+    assert_eq!(begin, 2.0);
+    decode_clean(&out);
+    assert_eq!(stream_hashes(&out, 0), stream_hashes(&path, 0)[120..300]);
+    assert!(first_pts(&out, "v:0").abs() < 0.001, "video starts at {}", first_pts(&out, "v:0"));
+    assert!(first_pts(&out, "a:0").abs() < 0.03, "audio starts at {}", first_pts(&out, "a:0"));
+}
+
+#[test]
+fn an_unfinished_recording_is_refused() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let (tracks, packets) = stream(Codec::H264, 1, 0);
+    let path = tmp("trim-crash.mp4");
+    record(&path, &tracks, &packets, false);
+    let out = tmp("trim-crash-out.mp4");
+    assert!(tape_core::mp4::trim::trim(&path, &out, 0.0, 2.0).is_err());
+    assert!(!out.exists());
+    // A cut that snaps back to a keyframe (at 1 s) is long enough even if the range asked for wasn't.
+    let finished = tmp("trim-short.mp4");
+    clip(&finished, &tracks, &packets);
+    assert!(tape_core::mp4::trim::trim(&finished, &out, 1.2, 1.4).is_err());
+    assert!(tape_core::mp4::trim::trim(&finished, &out, 1.8, 1.9).is_ok());
+    // Ends before it begins.
+    assert!(tape_core::mp4::trim::trim(&finished, &out, 3.0, 2.0).is_err());
 }

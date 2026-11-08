@@ -295,9 +295,12 @@ const Gallery = (() => {
   const THUMB_WIDTH = 320;
   const THUMB_HEIGHT = 180;
   const GIVE_UP_MS = 8000;
-  const KINDS = [["all", "All"], ["clip", "Clips"], ["recording", "Recordings"]];
+  const KINDS = [["all", "All"], ["clip", "Clips"], ["recording", "Recordings"], ["starred", "Starred"]];
+
+  const STAR = `<svg viewBox="0 0 16 16"><path d="M8 1.8l1.85 3.86 4.2.53-3.08 2.92.78 4.17L8 11.25l-3.75 2.03.78-4.17L1.95 6.19l4.2-.53z"/></svg>`;
 
   let box = null;
+  let options = { rename: true };
   let playerChanged = () => {};
   let clips = [];
   let game = "";
@@ -306,7 +309,7 @@ const Gallery = (() => {
   let making = false;
   const unreadable = new Set(); // no point retrying these until the next run
 
-  const shown = () => clips.filter((c) => (!game || c.game === game) && (kind === "all" || c.kind === kind));
+  const shown = () => clips.filter((c) => (!game || c.game === game) && (kind === "all" || c.kind === kind || (kind === "starred" && c.starred)));
 
   function gameOptions() {
     const counts = new Map();
@@ -320,13 +323,19 @@ const Gallery = (() => {
     return link ? `<span class="shared" title="Shared. The link works for ${Cloud.left(link.expires)} more.">Link · ${Cloud.left(link.expires)}</span>` : "";
   }
 
+  // A name the user gave it, or null for the automatic "<game> <date> - <time>" (and its trims).
+  const AUTO_NAME = /\d{4}\.\d\d\.\d\d - \d\d\.\d\d\.\d\d\.\d\d( trim( \d+)?)?( \(\d+\))?$/;
+  const stem = (c) => c.name.replace(/(\.DVR)?\.mp4$/i, "");
+  const customName = (c) => (AUTO_NAME.test(stem(c)) ? null : stem(c));
+
   const card = (c) => `<button class="tile" data-play="${esc(c.path)}" title="${esc(c.name)}">
       <span class="thumb">${c.thumb ? `<img src="${esc(convertFileSrc(c.thumb))}" alt="" loading="lazy">` : ""}
         ${c.seconds != null ? `<span class="length">${clock(c.seconds)}</span>` : ""}
         ${c.kind === "recording" ? `<span class="kind">Recording</span>` : ""}
+        ${c.starred ? `<span class="star-badge" title="Starred">${STAR}</span>` : ""}
         ${linkBadge(c)}</span>
-      <span class="title">${esc(c.game)}</span>
-      <span class="meta">${when(c.modified)} · ${bytes(c.bytes)}</span>
+      <span class="title">${esc(customName(c) || c.game)}</span>
+      <span class="meta">${customName(c) ? `${esc(c.game)} · ` : ""}${when(c.modified)} · ${bytes(c.bytes)}</span>
     </button>`;
 
   function cloudChip() {
@@ -338,7 +347,11 @@ const Gallery = (() => {
   function renderList() {
     if (!box) return;
     const list = shown();
-    const empty = clips.length ? "Nothing here matches." : "Nothing saved yet. Clips show up here as soon as you save them.";
+    const empty = !clips.length
+      ? "Nothing saved yet. Clips show up here as soon as you save them."
+      : kind === "starred" && !clips.some((c) => c.starred)
+        ? "Nothing starred yet. Star a clip in the player to keep it handy here."
+        : "Nothing here matches.";
     box.innerHTML = `<header class="top gallery-bar" data-tauri-drag-region>
         <h1 data-tauri-drag-region>Clips<span class="count">${clips.length || ""}</span></h1>
         <div class="sp" data-tauri-drag-region></div>
@@ -424,30 +437,46 @@ const Gallery = (() => {
 
   const player = () => $("player");
   const video = () => $("player-video");
+  const playing = () => shown()[current];
 
-  function show(index) {
+  function show(index, at) {
     const list = shown();
     const clip = list[index];
     if (!clip) return;
     if (current < 0) playerChanged(true);
+    closeTrim();
+    closeMenu();
     current = index;
     const v = video();
     $("player-note").hidden = true;
     v.hidden = false;
     v.src = convertFileSrc(clip.path);
+    if (at) v.currentTime = at;
     v.play().catch(() => {});
-    $("player-title").textContent = clip.game;
-    $("player-meta").textContent = `${clip.name} · ${when(clip.modified)} · ${bytes(clip.bytes)}`;
-    renderShare();
-    $("player-prev").disabled = index === 0;
-    $("player-next").disabled = index === list.length - 1;
+    renderBar();
     player().hidden = false;
     $("player-scrim").hidden = false;
     document.body.classList.add("playing");
   }
 
+  function renderBar() {
+    const clip = playing();
+    if (!clip) return;
+    const list = shown();
+    const custom = customName(clip);
+    $("player-info").innerHTML = `<div class="player-title" title="${esc(clip.name)}">${esc(custom || clip.game)}<span class="player-name">${esc(custom ? clip.game : stem(clip).replace(clip.game, "").trim())}</span></div>
+      <div class="player-meta">${when(clip.modified)} · ${bytes(clip.bytes)}${clip.seconds != null ? ` · ${clock(clip.seconds)}` : ""}</div>`;
+    const star = $("player-star");
+    star.classList.toggle("on", !!clip.starred);
+    star.title = clip.starred ? "Starred. Click to unstar." : "Star: keeps it under Starred";
+    star.setAttribute("aria-pressed", !!clip.starred);
+    $("player-prev").disabled = current === 0;
+    $("player-next").disabled = current === list.length - 1;
+    renderShare();
+  }
+
   function renderShare() {
-    const clip = shown()[current];
+    const clip = playing();
     const button = $("player-share");
     if (!clip || !button) return;
     button.textContent = Cloud.label(clip);
@@ -468,43 +497,328 @@ const Gallery = (() => {
     }
   });
 
-  function stop() {
-    if (current < 0) return;
-    current = -1;
-    player().hidden = true;
-    $("player-scrim").hidden = true;
-    document.body.classList.remove("playing");
+  // Lets go of the file, which Windows won't rename or delete while it's being read.
+  function release() {
     const v = video();
     v.pause();
     v.removeAttribute("src");
     v.load();
+  }
+
+  function stop() {
+    if (current < 0) return;
+    closeTrim();
+    closeMenu();
+    current = -1;
+    player().hidden = true;
+    $("player-scrim").hidden = true;
+    document.body.classList.remove("playing");
+    release();
     playerChanged(false);
     fillThumbs();
   }
 
-  function play(path) {
-    show(shown().findIndex((c) => c.path === path));
+  function play(path, at) {
+    show(shown().findIndex((c) => c.path === path), at);
   }
 
   const isOpen = () => current >= 0;
 
-  function mount(element, onPlayer) {
+  // Esc closes the innermost thing open. False if there was nothing to close.
+  function escape() {
+    if ($("player-rename")) return cancelRename(), true;
+    if (!$("player-menu").hidden) return closeMenu(), true;
+    if (trim) return closeTrim(), true;
+    if (isOpen()) return stop(), true;
+    return false;
+  }
+
+  // ---------- star, rename, delete ----------
+
+  async function toggleStar() {
+    const clip = playing();
+    if (!clip) return;
+    const on = !clip.starred;
+    try {
+      await invoke("star_clip", { path: clip.path, on });
+      clip.starred = on;
+      renderBar();
+      renderList();
+    } catch (err) {
+      toast(String(err), true);
+    }
+  }
+
+  function openMenu() {
+    const menu = $("player-menu");
+    if (!menu.hidden) return closeMenu();
+    menu.innerHTML = `${options.rename ? `<button class="menu-item" data-player="rename">Rename</button>` : ""}
+      <button class="menu-item" data-player="reveal">Show in folder</button>
+      <button class="menu-item" data-player="external">Open with default app</button>
+      <div class="menu-sep"></div>
+      <button class="menu-item danger" data-player="delete" id="player-delete">Delete</button>`;
+    menu.hidden = false;
+  }
+
+  function closeMenu() {
+    const menu = $("player-menu");
+    if (menu) menu.hidden = true;
+  }
+
+  function startRename() {
+    const clip = playing();
+    if (!clip) return;
+    closeMenu();
+    const title = $("player-info").querySelector(".player-title");
+    const current = stem(clip);
+    title.innerHTML = `<input class="text rename" id="player-rename" value="${esc(current)}" spellcheck="false" aria-label="New name">`;
+    const input = $("player-rename");
+    input.focus();
+    input.select();
+    input.addEventListener("keydown", (e) => {
+      e.stopPropagation(); // Esc here cancels the rename, not the player
+      if (e.key === "Enter") finishRename(input.value);
+      if (e.key === "Escape") cancelRename();
+    });
+    input.addEventListener("blur", () => $("player-rename") && finishRename(input.value));
+  }
+
+  function cancelRename() {
+    renderBar();
+  }
+
+  async function finishRename(name) {
+    const clip = playing();
+    const input = $("player-rename");
+    if (!clip || !input || input.dataset.done) return;
+    input.dataset.done = "1"; // removing it fires blur, which would come back here
+    input.remove();
+    if (!name.trim() || name.trim() === stem(clip)) return renderBar();
+    const v = video();
+    const at = v.currentTime;
+    const paused = v.paused;
+    release();
+    try {
+      const path = await invoke("rename_clip", { path: clip.path, name });
+      await load();
+      play(path, at);
+      if (paused) video().pause();
+      toast("Renamed");
+    } catch (err) {
+      toast(String(err), true);
+      play(clip.path, at);
+    }
+  }
+
+  let deleteArmed = 0;
+
+  // Asks once by changing the button, so it works without a keyboard over a game too.
+  async function remove() {
+    const clip = playing();
+    const button = $("player-delete");
+    if (!clip || !button) return;
+    if (Date.now() - deleteArmed > 4000) {
+      deleteArmed = Date.now();
+      button.textContent = "Move to Recycle Bin?";
+      button.classList.add("armed");
+      return;
+    }
+    deleteArmed = 0;
+    const index = current;
+    release();
+    try {
+      await invoke("delete_clip", { path: clip.path });
+      await load();
+      toast("Moved to the Recycle Bin");
+      const list = shown();
+      if (!list.length) return stop();
+      show(Math.min(index, list.length - 1));
+    } catch (err) {
+      toast(String(err), true);
+      play(clip.path);
+    }
+  }
+
+  // ---------- trim ----------
+
+  // While open: { path, keyframes, duration, start, end, saving }.
+  let trim = null;
+  let frame = 0;
+
+  // To a tenth of a second, which is as close as anyone drags.
+  const fine = (t) => `${clock(t)}.${Math.floor((t % 1) * 10)}`;
+
+  // A cut can only start where a keyframe is, so the start handle jumps between them.
+  const snap = (t) => trim.keyframes.reduce((best, k) => (k <= t + 0.001 ? Math.max(best, k) : best), trim.keyframes[0] || 0);
+
+  async function openTrim() {
+    const clip = playing();
+    if (!clip) return;
+    if (trim) return closeTrim();
+    closeMenu();
+    let info;
+    try {
+      info = await invoke("clip_info", { path: clip.path });
+    } catch (err) {
+      return toast(String(err), true);
+    }
+    if (playing() !== clip) return;
+    trim = { path: clip.path, keyframes: info.keyframes, duration: info.duration, start: 0, end: info.duration, saving: false };
+    const ticks = info.keyframes.length <= 400 ? info.keyframes.map((k) => `<i style="left:${(k / info.duration) * 100}%"></i>`).join("") : "";
+    $("player-trim").innerHTML = `<div class="trim-track" id="trim-track">
+        <div class="trim-keys">${ticks}</div>
+        <div class="trim-sel" id="trim-sel"></div>
+        <div class="trim-head" id="trim-head"></div>
+        <div class="trim-handle" id="trim-start" data-edge="start" role="slider" aria-label="Start" tabindex="0"></div>
+        <div class="trim-handle" id="trim-end" data-edge="end" role="slider" aria-label="End" tabindex="0"></div>
+      </div>
+      <div class="trim-row">
+        <button class="btn sm press" data-player="trim-start" title="Start at the keyframe nearest before the playhead">Start here</button>
+        <button class="btn sm press" data-player="trim-end">End here</button>
+        <div class="trim-times" id="trim-times"></div>
+        <div class="sp"></div>
+        <button class="btn sm ghost press" data-player="trim-cancel">Cancel</button>
+        <button class="btn sm pri press" id="trim-save" data-player="trim-save">Save trimmed copy</button>
+      </div>`;
+    $("player-trim").hidden = false;
+    $("player-trim-btn").classList.add("on");
+    renderTrim();
+    const tick = () => {
+      if (!trim) return;
+      followPlayhead();
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+  }
+
+  function closeTrim() {
+    if (!trim) return;
+    trim = null;
+    cancelAnimationFrame(frame);
+    $("player-trim").hidden = true;
+    $("player-trim").innerHTML = "";
+    $("player-trim-btn").classList.remove("on");
+  }
+
+  function renderTrim() {
+    if (!trim) return;
+    const pct = (t) => `${(t / trim.duration) * 100}%`;
+    $("trim-start").style.left = pct(trim.start);
+    $("trim-end").style.left = pct(trim.end);
+    $("trim-sel").style.left = pct(trim.start);
+    $("trim-sel").style.width = `${((trim.end - trim.start) / trim.duration) * 100}%`;
+    const length = trim.end - trim.start;
+    $("trim-times").innerHTML = `<b>${fine(trim.start)}</b> to <b>${fine(trim.end)}</b> · ${fine(length)} of ${clock(trim.duration)}`;
+    const save = $("trim-save");
+    save.disabled = trim.saving || length < 0.5 || (trim.start <= 0.001 && trim.end >= trim.duration - 0.05);
+    save.textContent = trim.saving ? "Saving…" : "Save trimmed copy";
+  }
+
+  // Keeps the playhead marker in place and playback inside the cut.
+  function followPlayhead() {
+    const v = video();
+    const head = $("trim-head");
+    if (!head) return;
+    head.style.left = `${(v.currentTime / trim.duration) * 100}%`;
+    if (!dragging && !v.paused && (v.currentTime >= trim.end || v.currentTime < trim.start - 0.25)) v.currentTime = trim.start;
+  }
+
+  function setEdge(edge, t) {
+    t = Math.max(0, Math.min(trim.duration, t));
+    if (edge === "start") trim.start = Math.min(snap(t), snap(Math.max(0, trim.end - 0.5)));
+    else trim.end = Math.max(t, trim.start + 0.5);
+    trim.end = Math.min(trim.end, trim.duration);
+    renderTrim();
+    // Show the frame the cut lands on.
+    video().currentTime = edge === "start" ? trim.start : Math.max(trim.start, trim.end - 0.05);
+  }
+
+  let dragging = null;
+
+  function timeAt(e) {
+    const r = $("trim-track").getBoundingClientRect();
+    return ((e.clientX - r.left) / r.width) * trim.duration;
+  }
+
+  document.addEventListener("pointerdown", (e) => {
+    if (!trim || !e.target.closest("#trim-track")) return;
+    const handle = e.target.closest(".trim-handle");
+    video().pause();
+    if (handle) {
+      dragging = handle.dataset.edge;
+      handle.setPointerCapture(e.pointerId);
+    } else {
+      video().currentTime = Math.max(trim.start, Math.min(trim.end, timeAt(e)));
+    }
+    e.preventDefault();
+  });
+  document.addEventListener("pointermove", (e) => dragging && trim && setEdge(dragging, timeAt(e)));
+  document.addEventListener("pointerup", () => (dragging = null));
+  document.addEventListener("keydown", (e) => {
+    const handle = e.target.closest?.(".trim-handle");
+    if (!trim || !handle || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;
+    e.preventDefault();
+    const edge = handle.dataset.edge;
+    const back = e.key === "ArrowLeft";
+    if (edge === "start") {
+      // Keyframe by keyframe.
+      const keys = trim.keyframes;
+      const i = keys.findIndex((k) => Math.abs(k - trim.start) < 0.001);
+      const next = keys[Math.max(0, Math.min(keys.length - 1, i + (back ? -1 : 1)))];
+      if (next != null) setEdge("start", next);
+    } else {
+      setEdge("end", trim.end + (back ? -1 : 1) * (e.shiftKey ? 1 : 0.1));
+    }
+  });
+
+  async function saveTrim() {
+    if (!trim || trim.saving) return;
+    trim.saving = true;
+    renderTrim();
+    const { path, start, end } = trim;
+    try {
+      const made = await invoke("trim_clip", { path, start, end });
+      await load();
+      // A new file sorts first, so "All" might not be where it shows; make sure it's in the list.
+      if (!shown().some((c) => c.path === made)) {
+        kind = "all";
+        game = "";
+        renderList();
+      }
+      play(made);
+      toast("Saved a trimmed copy. The original is unchanged.");
+    } catch (err) {
+      if (trim) {
+        trim.saving = false;
+        renderTrim();
+      }
+      toast(String(err), true);
+    }
+  }
+
+  function mount(element, onPlayer, opts) {
     box = element;
     if (onPlayer) playerChanged = onPlayer;
+    options = { ...options, ...opts };
     // A popup over the dimmed page. Clicking the dimmed part closes it.
     document.body.insertAdjacentHTML("beforeend", `<div class="scrim" id="player-scrim" hidden data-player="close"></div>
     <div class="player" id="player" hidden role="dialog" aria-modal="true" aria-label="Player">
       <div class="player-bar">
-        <div class="player-info"><div class="player-title" id="player-title"></div><div class="player-meta" id="player-meta"></div></div>
+        <div class="player-info" id="player-info"></div>
         <button class="btn sm press" id="player-prev" data-player="prev">Newer</button>
         <button class="btn sm press" id="player-next" data-player="next">Older</button>
-        <button class="btn sm ghost press" data-player="reveal">Show in folder</button>
-        <button class="btn sm ghost press" data-player="external">Open with default app</button>
+        <button class="btn sm ghost icon press star-btn" id="player-star" data-player="star" aria-label="Star">${STAR}</button>
+        <button class="btn sm press" id="player-trim-btn" data-player="trim" title="Cut it down and save the result as a new clip"><svg viewBox="0 0 16 16"><circle cx="4" cy="4.5" r="2"/><circle cx="4" cy="11.5" r="2"/><path d="M5.6 5.6L13 12M5.6 10.4L13 4"/></svg>Trim</button>
         <button class="btn sm pri press" id="player-share" data-player="share">Copy link</button>
+        <div class="menu-wrap">
+          <button class="btn sm ghost icon press" data-player="menu" title="More" aria-label="More"><svg viewBox="0 0 16 16"><circle cx="3.5" cy="8" r=".6"/><circle cx="8" cy="8" r=".6"/><circle cx="12.5" cy="8" r=".6"/></svg></button>
+          <div class="menu" id="player-menu" hidden></div>
+        </div>
         <button class="btn sm ghost icon press" data-player="close" title="Close (Esc)" aria-label="Close"><svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
       </div>
       <video id="player-video" controls></video>
       <div class="player-note" id="player-note" hidden>This video can't play here, usually because Windows is missing the format's codec. It should still open in your default app or in a browser.</div>
+      <div class="trim" id="player-trim" hidden></div>
     </div>`);
     const v = video();
     v.volume = Number(localStorage.getItem("volume") ?? 1);
@@ -523,6 +837,7 @@ const Gallery = (() => {
   });
 
   document.addEventListener("click", (e) => {
+    if (!e.target.closest(".menu-wrap")) closeMenu();
     const target = e.target.closest("[data-play],[data-kind],[data-player]");
     if (!target) return;
     const { play: path, kind: wanted, player: action } = target.dataset;
@@ -531,16 +846,26 @@ const Gallery = (() => {
       kind = wanted;
       return renderList();
     }
-    const clip = shown()[current];
+    const clip = playing();
+    if (action !== "delete") deleteArmed = 0;
     switch (action) {
       case "prev": return show(current - 1);
       case "next": return show(current + 1);
       case "close": return stop();
-      case "reveal": return clip && invoke("reveal_file", { path: clip.path });
-      case "external": return clip && invoke("open_file", { path: clip.path });
+      case "star": return toggleStar();
+      case "menu": return openMenu();
+      case "rename": return startRename();
+      case "delete": return remove();
+      case "trim": return openTrim();
+      case "trim-start": return trim && setEdge("start", video().currentTime);
+      case "trim-end": return trim && setEdge("end", video().currentTime);
+      case "trim-cancel": return closeTrim();
+      case "trim-save": return saveTrim();
+      case "reveal": closeMenu(); return clip && invoke("reveal_file", { path: clip.path });
+      case "external": closeMenu(); return clip && invoke("open_file", { path: clip.path });
       case "share": return clip && Cloud.share(clip);
     }
   });
 
-  return { mount, load, play, stop, isOpen, makeThumb };
+  return { mount, load, play, stop, isOpen, escape, makeThumb };
 })();

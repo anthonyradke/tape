@@ -93,6 +93,29 @@
           Object.assign(view.clips.find((c) => c.key === args.key), { thumb, seconds: args.seconds });
           return thumb;
         }
+        if (cmd === "clip_info") return { duration: 20, keyframes: Array.from({ length: 10 }, (_, i) => i * 2) };
+        if (cmd === "trim_clip") {
+          const c = view.clips.find((x) => x.path === args.path);
+          const name = c.name.replace(/(\.DVR)?\.mp4$/i, (end) => ` trim${end}`);
+          const made = { ...c, path: `${c.path}&trim${calls.length}`, name, key: `${c.key}b${calls.length}`, modified: Date.now(), seconds: args.end - args.start, thumb: null, starred: false };
+          view.clips.unshift(made);
+          return made.path;
+        }
+        if (cmd === "delete_clip") {
+          view.clips = view.clips.filter((c) => c.path !== args.path);
+          return;
+        }
+        if (cmd === "rename_clip") {
+          const c = view.clips.find((x) => x.path === args.path);
+          if (!args.name.trim()) throw "That name has nothing a file name can use.";
+          c.name = `${args.name}${c.kind === "clip" ? ".DVR" : ""}.mp4`;
+          c.path = `${c.path.split("#")[0]}#${encodeURIComponent(args.name)}`;
+          return c.path;
+        }
+        if (cmd === "star_clip") {
+          view.clips.find((x) => x.path === args.path).starred = args.on;
+          return;
+        }
         if (cmd === "share_usage") return settings.shareServer ? structuredClone(usage) : null;
         if (cmd === "share_jobs") return [];
         if (cmd === "copy_text" || cmd === "cancel_share") return;

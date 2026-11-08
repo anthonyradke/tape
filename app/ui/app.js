@@ -361,7 +361,7 @@ async function listenForKey(button, name) {
 
 // Hotkey capture listens first and stops the event, so this only sees a free Esc.
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && Gallery.isOpen()) Gallery.stop();
+  if (e.key === "Escape") Gallery.escape();
 });
 
 // ---------- engine events ----------

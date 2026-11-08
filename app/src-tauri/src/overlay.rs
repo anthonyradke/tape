@@ -174,11 +174,28 @@ mod platform {
     use std::sync::atomic::{AtomicIsize, Ordering};
 
     use tauri::WebviewWindow;
-    use windows::Win32::Foundation::HWND;
+    use windows::core::PWSTR;
+    use windows::Win32::Foundation::{CloseHandle, HWND};
+    use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetForegroundWindow, GetWindowDisplayAffinity, SetForegroundWindow, SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE,
-        SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, WDA_EXCLUDEFROMCAPTURE,
+        GetClassNameW, GetForegroundWindow, GetWindowDisplayAffinity, GetWindowThreadProcessId, SetForegroundWindow, SetWindowPos,
+        ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, WDA_EXCLUDEFROMCAPTURE,
     };
+
+    /// Processes that host the shell's flyouts: quick settings and the sound output picker
+    /// (Win+Ctrl+V), the volume and notification flyouts, Start and search.
+    const SHELL_HOSTS: [&str; 4] = ["shellexperiencehost.exe", "shellhost.exe", "startmenuexperiencehost.exe", "searchhost.exe"];
+    /// Explorer's own popups: the taskbar, the tray overflow, the Alt+Tab switcher and the input
+    /// switcher. Not its folder windows, or the desktop.
+    const SHELL_CLASSES: [&str; 7] = [
+        "Shell_TrayWnd",
+        "Shell_SecondaryTrayWnd",
+        "TopLevelWindowForOverflowXamlIsland",
+        "NotifyIconOverflowWindow",
+        "XamlExplorerHostIslandWindow",
+        "MultitaskingViewFrame",
+        "Shell_InputSwitchTopLevelWindow",
+    ];
 
     /// The window that had focus when the panel opened, normally the game.
     static PREVIOUS: AtomicIsize = AtomicIsize::new(0);
@@ -214,10 +231,37 @@ mod platform {
         hwnd(window).is_some_and(|h| unsafe { GetForegroundWindow() } == h)
     }
 
-    /// Something other than the game and the panel came to the front, Alt+Tab say.
+    fn class_name(window: HWND) -> String {
+        let mut buffer = [0u16; 256];
+        let len = unsafe { GetClassNameW(window, &mut buffer) } as usize;
+        String::from_utf16_lossy(&buffer[..len])
+    }
+
+    fn process_name(window: HWND) -> String {
+        let mut pid = 0;
+        unsafe { GetWindowThreadProcessId(window, Some(&mut pid)) };
+        let Ok(process) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }) else { return String::new() };
+        let mut buffer = [0u16; 1024];
+        let mut len = buffer.len() as u32;
+        let got = unsafe { QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, PWSTR(buffer.as_mut_ptr()), &mut len) };
+        let _ = unsafe { CloseHandle(process) };
+        if got.is_err() {
+            return String::new();
+        }
+        let path = String::from_utf16_lossy(&buffer[..len as usize]);
+        path.rsplit('\\').next().unwrap_or_default().to_lowercase()
+    }
+
+    /// A shell popup over the game, like the sound output picker, which goes away again by itself.
+    fn is_shell_popup(window: HWND) -> bool {
+        SHELL_CLASSES.contains(&class_name(window).as_str()) || SHELL_HOSTS.contains(&process_name(window).as_str())
+    }
+
+    /// Something other than the game and the panel came to the front, Alt+Tab say. Shell popups
+    /// don't count, so changing the sound output with Win+Ctrl+V leaves a clip playing.
     pub fn focus_moved_on(window: &WebviewWindow) -> bool {
         let now = unsafe { GetForegroundWindow() };
-        !now.is_invalid() && now != previous() && !is_foreground(window)
+        !now.is_invalid() && now != previous() && !is_foreground(window) && !is_shell_popup(now)
     }
 
     /// Windows usually does this by itself, but not always to the game.

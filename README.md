@@ -27,7 +27,8 @@ OBS or ffmpeg underneath. It was written after the NVIDIA app's instant replay k
 - Recording alongside replay, from one encoder session.
 - H.264, HEVC or AV1, chosen from what the GPU reports, with bitrate, frame rate and quality settings that apply as
   soon as they change.
-- Output at the monitor's resolution, scaled down, or upscaled to 1440p or 4K on a smaller monitor.
+- Output at the monitor's resolution, scaled down, or upscaled to 1440p or 4K for sites that give higher
+  resolutions a better bitrate.
 - Game audio from any output device and a microphone from any input device, mixed or on separate tracks.
 - A side panel over the game on Alt+Z with replay, recording, common settings and recent clips.
 - A gallery with thumbnails and a built-in player, filtered by game or by starred clips.
@@ -80,6 +81,8 @@ flowchart LR
 Frames stay on the GPU from capture to encoder, so the only copy into system memory is the finished
 bitstream.
 
+### Two processes
+
 The app is two processes. The tray and window run in one, and capture and encoding in a child process
 watched by the first. If the engine crashes or stops responding inside a driver call, it is replaced
 within seconds and any recording resumes in a new file. A failure that lasts more than ten seconds, or
@@ -87,10 +90,14 @@ repeated crashes, plays an alert tone, so replay can't turn off unnoticed. Failu
 error (capture lost to a UAC prompt, a GPU reset, an unplugged headset) are handled inside the engine
 without losing the replay buffer where possible.
 
+### File format
+
 Recordings use a hybrid MP4 layout. The file is valid fragmented MP4 from the first seconds, so a crash
 or power cut costs at most the last two seconds. Finishing appends a normal `moov` and rewrites two box
 headers in place, with no copying. Clips are written with `moov` first so they start immediately when
 shared.
+
+### Overlay
 
 The overlay is an ordinary always-on-top window docked to the side of the screen and excluded from
 capture with `WDA_EXCLUDEFROMCAPTURE`, not a hook into the game's renderer, which is what anti-cheat
@@ -98,23 +105,20 @@ software looks for. It opens without taking focus, because a fullscreen game lea
 loses focus, so Esc is held as a global key while it's open. Its webview is created on first use and
 released after five minutes hidden.
 
+### Game detection
+
 Game names come from Steam's manifests and from install folders of other stores, with a short table for
 games those don't cover. Anything else counts as a game if it fills a monitor without a title bar, and
 takes its name from the window title. Everything else goes in `Desktop`.
 
+### Updates
+
 Updates are ordinary GitHub releases. Each holds the installer and a `latest.json`, and the app verifies the
 installer's signature against a public key built into it before running it.
 
-| Module | Role |
-|---|---|
-| `crates/core` | Everything platform-free: MP4 writers, replay ring, audio mixing, game detection, file names, settings |
-| `crates/nvenc` | Bindings generated from the NVENC headers |
-| `crates/engine` | The engine process. `win/` is the real backend, `fake.rs` a stand-in for tests |
-| `app/src-tauri` | The tray app: supervisor, hotkeys, overlay window, updates |
-| `app/ui` | Plain HTML, CSS and JavaScript with no build step |
-| `share` | The Cloudflare Worker behind Copy link |
-
 ## Build from source
+
+Requires a stable Rust toolchain.
 
 ```sh
 cargo test -p tape-core -p tape-engine -p nvenc   # needs ffmpeg on PATH for the MP4 tests
@@ -126,6 +130,8 @@ scripts/release.sh X.Y.Z                          # tags a release from UNRELEAS
 
 `build-windows.sh` signs for updates, so it needs a key in `~/.tauri`. On Windows, `cargo build --release -p tape`
 builds the app without one.
+
+### Testing
 
 | What | How it's tested |
 |---|---|
@@ -144,11 +150,13 @@ own process, because a process can only duplicate an output once and replay stay
 
 | Path | Contents |
 |---|---|
+| `crates/core` | Everything platform-free: MP4 writers, replay ring, audio mixing, game detection, file names, settings |
 | `crates/core/src/mp4/` | Hand-written MP4: hybrid recordings, `moov`-first clips, lossless trimming |
-| `crates/core/src/game.rs` | Game detection from Steam manifests and store folders |
-| `crates/engine/src/win/` | Capture, video processor, NVENC, WASAPI, AAC, self-test |
-| `app/src-tauri/src/supervisor.rs` | Starts, watches and replaces the engine |
-| `app/src-tauri/src/overlay.rs` | The side panel window |
+| `crates/nvenc` | Bindings generated from the NVENC headers |
+| `crates/engine` | The engine process. `win/` is the real backend (capture, video processor, NVENC, WASAPI, AAC, self-test), `fake.rs` a stand-in for tests |
+| `app/src-tauri` | The tray app: supervisor (`supervisor.rs`), hotkeys, overlay window (`overlay.rs`), updates |
+| `app/ui` | Plain HTML, CSS and JavaScript with no build step |
+| `share` | The Cloudflare Worker behind Copy link |
 | `scripts/` | Builds, releases, the UI preview, NVENC bindings, icons |
 
 ## Known limitations
@@ -159,7 +167,6 @@ own process, because a process can only duplicate an output once and replay stay
   show it.
 - The game keeps the mouse and keyboard while the overlay is open. A game that locks the cursor has to be paused to
   its menu before the overlay's buttons can be clicked.
-- Upscaling adds pixels, not detail. It suits sites that keep higher resolutions at better quality.
 - Sound cues play through the normal output, so they end up in clips, and so does audio from a clip played in the app.
 - Games in a window outside a known store folder aren't recognized and go in `Desktop`.
 - Shared links carry the first audio track only, so with separate tracks they have game audio without the mic.

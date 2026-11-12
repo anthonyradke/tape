@@ -16,6 +16,8 @@ use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerforma
 
 use super::com_init;
 use crate::backend::{AudioBlock, AudioInput, Clock, Source};
+use crate::log;
+use crate::mix::SilenceMeter;
 
 const BUFFER_100NS: i64 = 10_000_000; // 1 s, far more than the 5 ms poll needs
 const DEFAULT_CHECK: Duration = Duration::from_secs(2);
@@ -117,6 +119,9 @@ pub struct Input {
     clock: Clock,
     pcm: Vec<f32>,
     stereo: Vec<f32>,
+    /// The mix format as WASAPI gave it, for the log.
+    format: String,
+    silence: SilenceMeter,
 }
 
 impl Input {
@@ -152,10 +157,16 @@ impl Input {
                 }
             };
             let (channels, rate, block_align) = (f.nChannels as usize, f.nSamplesPerSec, f.nBlockAlign as usize);
+            let kind = match sample {
+                Sample::Float32 => "float",
+                _ => "int",
+            };
+            let bits = f.wBitsPerSample; // a packed field, so copied out before formatting
+            let format_text = format!("{kind} {bits} bit, {rate} Hz, {channels} channels");
             let flags = if source == Source::System { AUDCLNT_STREAMFLAGS_LOOPBACK } else { 0 };
             let started = client.Initialize(AUDCLNT_SHAREMODE_SHARED, flags, BUFFER_100NS, 0, format, None);
             CoTaskMemFree(Some(format as *const _));
-            started.map_err(text)?;
+            started.map_err(|e| format!("{e} ({name}, {format_text})"))?;
             let capture: IAudioCaptureClient = client.GetService().map_err(text)?;
             client.Start().map_err(text)?;
             Ok(Input {
@@ -175,6 +186,8 @@ impl Input {
                 origin_100ns: qpc_100ns() - clock.now_us() * 10,
                 pcm: Vec::new(),
                 stereo: Vec::new(),
+                format: format_text,
+                silence: SilenceMeter::new(Instant::now()),
             })
         }
     }
@@ -204,6 +217,10 @@ impl AudioInput for Input {
         self.name.clone()
     }
 
+    fn describe(&self) -> String {
+        format!("{}, {}", self.name, self.format)
+    }
+
     fn read(&mut self, out: &mut Vec<AudioBlock>) -> Result<(), String> {
         loop {
             let waiting = unsafe { self.capture.GetNextPacketSize() }.map_err(|e| format!("Device lost: {e}"))?;
@@ -213,6 +230,9 @@ impl AudioInput for Input {
             let (mut data, mut frames, mut flags, mut qpc) = (std::ptr::null_mut(), 0u32, 0u32, 0u64);
             unsafe { self.capture.GetBuffer(&mut data, &mut frames, &mut flags, None, Some(&mut qpc)) }.map_err(|e| format!("Device lost: {e}"))?;
             let silent = flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0;
+            if let Some(line) = self.silence.packet(silent, Instant::now()) {
+                log!("audio {:?} ({}): {line}", self.source, self.name);
+            }
             self.decode(data, frames as usize, silent);
             unsafe { self.capture.ReleaseBuffer(frames) }.map_err(|e| format!("Device lost: {e}"))?;
 

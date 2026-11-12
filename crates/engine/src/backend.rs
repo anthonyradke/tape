@@ -93,6 +93,10 @@ pub struct AudioBlock {
 
 pub trait AudioInput {
     fn name(&self) -> String;
+    /// Name and format, for the log.
+    fn describe(&self) -> String {
+        self.name()
+    }
     /// Everything available now, without blocking. An error means reopen the device.
     fn read(&mut self, out: &mut Vec<AudioBlock>) -> Result<(), String>;
     /// True when this input follows the Windows default and the default has moved.

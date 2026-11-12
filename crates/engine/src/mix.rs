@@ -12,6 +12,7 @@ use tape_core::packet::{AudioFormat, AAC_FRAME, AUDIO_RATE};
 use tape_core::settings::{Settings, MAX_MIC_DELAY_MS, NO_DEVICE};
 
 use crate::backend::{AudioBlock, AudioContext, AudioInput, AudioShared, Backend, Source};
+use crate::log;
 
 const ASC_AAC_LC_48K_STEREO: [u8; 2] = [0x11, 0x90];
 const RETRY: Duration = Duration::from_secs(2);
@@ -72,6 +73,7 @@ impl Channel {
             self.next_open = Instant::now() + RETRY;
             match backend.open_audio(self.source, &self.device, ctx.clock) {
                 Ok(input) => {
+                    log!("audio {:?}: opened {}", self.source, input.describe());
                     let status = AudioSource { name: input.name(), running: true, peak: 0.0, problem: None };
                     *self.status(&ctx.shared).lock().unwrap() = Some(status);
                     self.input = Some(input);
@@ -92,6 +94,7 @@ impl Channel {
     }
 
     fn fail(&self, shared: &AudioShared, problem: String) {
+        log!("audio {:?} ({}): {problem}", self.source, if self.device.is_empty() { "default" } else { &self.device });
         let mut status = self.status(shared).lock().unwrap();
         let s = status.get_or_insert_with(AudioSource::default);
         s.running = false;
@@ -175,6 +178,44 @@ pub fn run(backend: &dyn Backend, settings: &Settings, ctx: &AudioContext) -> Re
     Ok(())
 }
 
+/// Counts packets the device flagged as silence. A microphone blocked by the Windows privacy
+/// settings opens fine and then delivers nothing but these, so the share of them goes in the log:
+/// soon after opening, then every few minutes. Only WASAPI has the flag.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub struct SilenceMeter {
+    packets: u64,
+    silent: u64,
+    since: Instant,
+    reports: u32,
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+const FIRST_SILENCE_REPORT: Duration = Duration::from_secs(10);
+#[cfg_attr(not(windows), allow(dead_code))]
+const SILENCE_REPORT: Duration = Duration::from_secs(300);
+
+#[cfg_attr(not(windows), allow(dead_code))]
+impl SilenceMeter {
+    pub fn new(now: Instant) -> Self {
+        SilenceMeter { packets: 0, silent: 0, since: now, reports: 0 }
+    }
+
+    /// Returns a line for the log when one is due.
+    pub fn packet(&mut self, silent: bool, now: Instant) -> Option<String> {
+        self.packets += 1;
+        self.silent += silent as u64;
+        let every = if self.reports == 0 { FIRST_SILENCE_REPORT } else { SILENCE_REPORT };
+        if now.duration_since(self.since) < every {
+            return None;
+        }
+        let seconds = now.duration_since(self.since).as_secs();
+        let percent = self.silent * 100 / self.packets;
+        let line = format!("{percent}% of {} packets flagged silent in {seconds} s", self.packets);
+        *self = SilenceMeter { packets: 0, silent: 0, since: now, reports: self.reports + 1 };
+        Some(line)
+    }
+}
+
 /// The mic delay setting in samples.
 fn mic_shift(shared: &Arc<AudioShared>) -> i64 {
     let ms = shared.mic_delay_ms.load(Ordering::Relaxed).min(MAX_MIC_DELAY_MS);
@@ -204,5 +245,18 @@ mod tests {
         assert_eq!(names("default", "", true), ["Game audio"]);
         assert_eq!(names("", "x", false), ["Microphone"]);
         assert!(names("", "", false).is_empty());
+    }
+
+    #[test]
+    fn silence_is_reported_soon_after_opening_then_now_and_then() {
+        let start = Instant::now();
+        let mut meter = SilenceMeter::new(start);
+        assert_eq!(meter.packet(true, start), None);
+        assert_eq!(meter.packet(true, start + Duration::from_secs(5)), None);
+        let line = meter.packet(false, start + FIRST_SILENCE_REPORT).unwrap();
+        assert_eq!(line, "66% of 3 packets flagged silent in 10 s");
+        let later = start + FIRST_SILENCE_REPORT;
+        assert_eq!(meter.packet(true, later + FIRST_SILENCE_REPORT), None);
+        assert_eq!(meter.packet(true, later + SILENCE_REPORT).unwrap(), "100% of 2 packets flagged silent in 300 s");
     }
 }

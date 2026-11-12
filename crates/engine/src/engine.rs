@@ -465,7 +465,11 @@ pub fn run(backend: Arc<dyn Backend>, input: impl BufRead + Send + 'static, mut 
                         break;
                     }
                 }
-                Err(e) => log!("bad command {line}: {e}"),
+                // Not the line itself: a configure command carries the share upload key.
+                Err(e) => {
+                    let name = serde_json::from_str::<serde_json::Value>(&line).ok().and_then(|v| v["cmd"].as_str().map(String::from));
+                    log!("bad command {}: {e}", name.as_deref().unwrap_or("(unreadable)"));
+                }
             }
         }
     });

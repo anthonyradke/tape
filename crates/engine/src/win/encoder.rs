@@ -14,6 +14,7 @@ use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11Texture2D};
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 
 use super::gfx::{Gfx, OutputInfo};
+use crate::log;
 
 /// How far apart keyframes are. A clip starts on one, so this bounds how much extra a clip holds.
 const KEYFRAME_SECONDS: u32 = 2;
@@ -270,6 +271,22 @@ impl Encoder {
             init.enableEncodeAsync = 0;
             init.encodeConfig = &mut config;
             check(api.nvEncInitializeEncoder.unwrap()(self.session, &mut init), "initialize")?;
+            log!(
+                "nvenc: {} {}x{} at {} fps, preset {:?} (P{}), high quality tuning, VBR {} / {} kbps, vbv {} kbit, gop {gop}, no B-frames, API {NVENCAPI_MAJOR_VERSION}.{NVENCAPI_MINOR_VERSION}",
+                super::codec_name(codec),
+                self.width,
+                self.height,
+                settings.fps,
+                settings.preset,
+                match settings.preset {
+                    Preset::Fast => 1,
+                    Preset::Balanced => 3,
+                    Preset::Quality => 5,
+                },
+                config.rcParams.averageBitRate / 1000,
+                config.rcParams.maxBitRate / 1000,
+                config.rcParams.vbvBufferSize / 1000,
+            );
 
             let mut output: NV_ENC_CREATE_BITSTREAM_BUFFER = zeroed();
             output.version = CREATE_BITSTREAM_BUFFER_VER;

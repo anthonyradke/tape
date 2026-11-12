@@ -27,13 +27,16 @@ pub(crate) fn top_level(file: &mut File) -> io::Result<Vec<([u8; 4], u64, u64)>>
         file.read_exact(&mut head[..8])?;
         let mut size = u32::from_be_bytes(head[..4].try_into().unwrap()) as u64;
         let kind: [u8; 4] = head[4..8].try_into().unwrap();
+        let mut header = 8;
         if size == 1 {
             file.read_exact(&mut head[8..16])?;
             size = u64::from_be_bytes(head[8..16].try_into().unwrap());
+            header = 16;
         } else if size == 0 {
             size = end - at;
         }
-        if size < 8 || at + size > end {
+        // Sizes come from the file: one past its end, or so large the sum wraps, is damage.
+        if size < header || at.checked_add(size).is_none_or(|box_end| box_end > end) {
             return Err(invalid("damaged MP4 box"));
         }
         boxes.push((kind, at, size));
@@ -124,4 +127,43 @@ pub fn faststart(path: &Path) -> io::Result<bool> {
     }
     std::fs::rename(&temporary, path)?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn file_with(name: &str, data: &[u8]) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("tape-faststart-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        std::fs::write(&path, data).unwrap();
+        path
+    }
+
+    fn boxes_of(name: &str, data: &[u8]) -> io::Result<Vec<([u8; 4], u64, u64)>> {
+        top_level(&mut File::open(file_with(name, data))?)
+    }
+
+    #[test]
+    fn box_sizes_that_wrap_or_overrun_are_damage() {
+        let ftyp = [0, 0, 0, 8, b'f', b't', b'y', b'p'];
+        // A 64-bit size that wraps the offset past zero.
+        let mut wraps = ftyp.to_vec();
+        wraps.extend_from_slice(&[0, 0, 0, 1, b'm', b'd', b'a', b't']);
+        wraps.extend_from_slice(&(u64::MAX - 3).to_be_bytes());
+        assert!(boxes_of("wraps.mp4", &wraps).is_err());
+        // A 64-bit size too small to hold its own header.
+        let mut tiny = ftyp.to_vec();
+        tiny.extend_from_slice(&[0, 0, 0, 1, b'm', b'd', b'a', b't']);
+        tiny.extend_from_slice(&8u64.to_be_bytes());
+        assert!(boxes_of("tiny.mp4", &tiny).is_err());
+        // Past the end of the file.
+        let mut long = ftyp.to_vec();
+        long.extend_from_slice(&[0, 0, 0, 100, b'm', b'o', b'o', b'v']);
+        assert!(boxes_of("long.mp4", &long).is_err());
+        assert!(faststart(&file_with("wraps2.mp4", &wraps)).is_err());
+        // And a sound file still reads.
+        assert_eq!(boxes_of("ok.mp4", &ftyp).unwrap().len(), 1);
+    }
 }

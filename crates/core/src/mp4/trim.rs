@@ -55,7 +55,7 @@ fn children(data: &[u8]) -> io::Result<Vec<Child<'_>>> {
         } else if size == 0 {
             size = data.len() - at;
         }
-        if size < header || at + size > data.len() {
+        if size < header || at.checked_add(size).is_none_or(|end| end > data.len()) {
             return Err(invalid("damaged box in moov"));
         }
         out.push(Child { kind, whole: &data[at..at + size], body: &data[at + header..at + size] });
@@ -112,24 +112,33 @@ struct Movie {
     tracks: Vec<Track>,
 }
 
-fn read_sample_table(stbl: &[Child]) -> io::Result<(Vec<Sample>, bool, u8, bool)> {
+/// `file_len` bounds what the tables may claim: counts in them come from the file, and a few bytes
+/// can otherwise ask for billions of samples.
+fn read_sample_table(stbl: &[Child], file_len: u64) -> io::Result<(Vec<Sample>, bool, u8, bool)> {
     let need = |k: &[u8; 4]| find(stbl, k).ok_or_else(|| invalid("incomplete sample table"));
 
+    let (_, stsz) = full_body(find(stbl, b"stsz").ok_or_else(|| invalid("unsupported sample size table"))?)?;
+    let fixed = be32(stsz, 0)?;
+    let count = be32(stsz, 4)? as usize;
+    // A list of sizes is bounded by the box holding it; one size for all only by the file.
+    if fixed != 0 && count as u64 > file_len / fixed as u64 {
+        return Err(invalid("sample table larger than the file"));
+    }
+    let sizes: Vec<u32> = if fixed != 0 { vec![fixed; count] } else { (0..count).map(|i| be32(stsz, 8 + i * 4)).collect::<io::Result<_>>()? };
+
     let (_, stts) = full_body(need(b"stts")?)?;
-    let mut timing = Vec::new();
+    let mut timing = Vec::with_capacity(sizes.len());
     let mut dts = 0i64;
     for i in 0..be32(stts, 0)? as usize {
         let (count, delta) = (be32(stts, 4 + i * 8)?, be32(stts, 8 + i * 8)?);
+        if timing.len() + count as usize > sizes.len() {
+            return Err(invalid("sample tables disagree"));
+        }
         for _ in 0..count {
             timing.push((dts, delta));
             dts += delta as i64;
         }
     }
-
-    let (_, stsz) = full_body(find(stbl, b"stsz").ok_or_else(|| invalid("unsupported sample size table"))?)?;
-    let fixed = be32(stsz, 0)?;
-    let count = be32(stsz, 4)? as usize;
-    let sizes: Vec<u32> = if fixed != 0 { vec![fixed; count] } else { (0..count).map(|i| be32(stsz, 8 + i * 4)).collect::<io::Result<_>>()? };
     if sizes.len() != timing.len() {
         return Err(invalid("sample tables disagree"));
     }
@@ -166,7 +175,9 @@ fn read_sample_table(stbl: &[Child]) -> io::Result<(Vec<Sample>, bool, u8, bool)
             let mut list = Vec::with_capacity(sizes.len());
             for i in 0..be32(b, 0)? as usize {
                 let (count, offset) = (be32(b, 4 + i * 8)?, be32(b, 8 + i * 8)? as i32);
-                list.extend(std::iter::repeat_n(offset, count as usize));
+                // Anything past the last sample is ignored below, so it isn't stored either.
+                let count = (count as usize).min(sizes.len() - list.len());
+                list.extend(std::iter::repeat_n(offset, count));
             }
             (true, version, list)
         }
@@ -216,7 +227,7 @@ fn read_edits(trak: &[Child]) -> io::Result<(u64, i64)> {
     Ok((empty, 0))
 }
 
-fn read_track(trak: &Child) -> io::Result<Track> {
+fn read_track(trak: &Child, file_len: u64) -> io::Result<Track> {
     let kids = children(trak.body)?;
     let mdia = children(find(&kids, b"mdia").ok_or_else(|| invalid("track without media"))?.body)?;
     let (version, mdhd) = full_body(find(&mdia, b"mdhd").ok_or_else(|| invalid("no mdhd"))?)?;
@@ -226,7 +237,7 @@ fn read_track(trak: &Child) -> io::Result<Track> {
     let minf = children(find(&mdia, b"minf").ok_or_else(|| invalid("no minf"))?.body)?;
     let stbl = children(find(&minf, b"stbl").ok_or_else(|| invalid("no stbl"))?.body)?;
     find(&stbl, b"stsd").ok_or_else(|| invalid("no stsd"))?;
-    let (samples, has_ctts, ctts_version, has_stss) = read_sample_table(&stbl)?;
+    let (samples, has_ctts, ctts_version, has_stss) = read_sample_table(&stbl, file_len)?;
     let (empty, media_time) = read_edits(&kids)?;
     if timescale == 0 {
         return Err(invalid("track has no timescale"));
@@ -257,7 +268,8 @@ fn read_movie(file: &mut File) -> io::Result<Movie> {
     }
     let (version, mvhd) = full_body(find(&kids, b"mvhd").ok_or_else(|| invalid("no mvhd"))?)?;
     let timescale = be32(mvhd, if version == 1 { 16 } else { 8 })?;
-    let tracks = kids.iter().filter(|c| &c.kind == b"trak").map(read_track).collect::<io::Result<Vec<_>>>()?;
+    let file_len = file.metadata()?.len();
+    let tracks = kids.iter().filter(|c| &c.kind == b"trak").map(|t| read_track(t, file_len)).collect::<io::Result<Vec<_>>>()?;
     if timescale == 0 {
         return Err(invalid("movie has no timescale"));
     }
@@ -683,6 +695,134 @@ mod tests {
         assert_eq!(snap(&info, 4.0), 4.0);
         assert_eq!(snap(&info, 0.0), 0.0);
         assert_eq!(snap(&info, 9.0), 6.0);
+    }
+
+    use super::super::boxes::{bx, full, Put};
+
+    /// A one-track file with 10 one-byte samples in one chunk, and `tables` as its sample tables
+    /// after stsd (stts, stsz and any others; stsc and stco come after them).
+    fn crafted(name: &str, tables: impl FnOnce(&mut Vec<u8>)) -> std::path::PathBuf {
+        let mut file = Vec::new();
+        bx(&mut file, b"ftyp", |o| o.extend_from_slice(b"isom\0\0\0\0"));
+        let data_at = file.len() as u32 + 8;
+        bx(&mut file, b"mdat", |o| o.zeros(10));
+        bx(&mut file, b"moov", |o| {
+            full(o, b"mvhd", 0, 0, |o| {
+                o.zeros(8);
+                o.u32(1000);
+                o.zeros(84);
+            });
+            bx(o, b"trak", |o| {
+                bx(o, b"mdia", |o| {
+                    full(o, b"mdhd", 0, 0, |o| {
+                        o.zeros(8);
+                        o.u32(10);
+                        o.zeros(8);
+                    });
+                    full(o, b"hdlr", 0, 0, |o| {
+                        o.u32(0);
+                        o.extend_from_slice(b"vide");
+                        o.zeros(13);
+                    });
+                    bx(o, b"minf", |o| {
+                        bx(o, b"stbl", |o| {
+                            full(o, b"stsd", 0, 0, |o| o.u32(0));
+                            tables(o);
+                            full(o, b"stsc", 0, 0, |o| {
+                                o.u32(1);
+                                o.u32(1);
+                                o.u32(10);
+                                o.u32(1);
+                            });
+                            full(o, b"stco", 0, 0, |o| {
+                                o.u32(1);
+                                o.u32(data_at);
+                            });
+                        });
+                    });
+                });
+            });
+        });
+        let dir = std::env::temp_dir().join(format!("tape-trim-crafted-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        std::fs::write(&path, file).unwrap();
+        path
+    }
+
+    fn stts(o: &mut Vec<u8>, count: u32) {
+        full(o, b"stts", 0, 0, |o| {
+            o.u32(1);
+            o.u32(count);
+            o.u32(1);
+        });
+    }
+
+    fn stsz(o: &mut Vec<u8>, fixed: u32, count: u32) {
+        full(o, b"stsz", 0, 0, |o| {
+            o.u32(fixed);
+            o.u32(count);
+            if fixed == 0 {
+                for _ in 0..count {
+                    o.u32(1);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn a_sound_crafted_file_reads() {
+        let path = crafted("sound.mp4", |o| {
+            stts(o, 10);
+            stsz(o, 1, 10);
+        });
+        let info = info(&path).unwrap();
+        assert_eq!(info.keyframes.len(), 10);
+        assert!((info.duration - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_huge_timing_count_is_refused_without_allocating_it() {
+        let path = crafted("stts.mp4", |o| {
+            stts(o, u32::MAX);
+            stsz(o, 1, 10);
+        });
+        assert!(info(&path).is_err());
+    }
+
+    #[test]
+    fn a_fixed_size_table_larger_than_the_file_is_refused() {
+        let path = crafted("stsz.mp4", |o| {
+            stts(o, 10);
+            stsz(o, 1, u32::MAX);
+        });
+        assert!(info(&path).is_err());
+    }
+
+    #[test]
+    fn a_huge_offset_table_count_is_capped() {
+        let path = crafted("ctts.mp4", |o| {
+            stts(o, 10);
+            stsz(o, 1, 10);
+            full(o, b"ctts", 0, 0, |o| {
+                o.u32(1);
+                o.u32(u32::MAX);
+                o.u32(0);
+            });
+        });
+        assert_eq!(info(&path).unwrap().keyframes.len(), 10);
+    }
+
+    #[test]
+    fn a_child_box_size_that_wraps_is_refused() {
+        let path = crafted("wrap.mp4", |o| {
+            stts(o, 10);
+            stsz(o, 1, 10);
+            o.u32(1);
+            o.extend_from_slice(b"junk");
+            o.u64(u64::MAX - 3);
+        });
+        assert!(info(&path).is_err());
     }
 
     #[test]

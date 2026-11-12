@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::commands::{self, inside_folder};
+use crate::commands;
 use crate::state::Shared;
 use crate::supervisor;
 
@@ -267,7 +267,7 @@ async fn share(app: &AppHandle, path: &str, cancel: &AtomicBool) -> Result<Strin
 /// Shares a clip and copies its link. One at a time: conversion uses the GPU beside a game.
 #[tauri::command]
 pub async fn share_clip(app: AppHandle, path: String) -> Result<String, String> {
-    if !inside_folder(&app, &path) {
+    if commands::clip_file(&app, &path).is_none() {
         return Err("Only clips in the clips folder can be shared.".into());
     }
     let cancel = Arc::new(AtomicBool::new(false));

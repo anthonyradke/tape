@@ -3,7 +3,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant, UNIX_EPOCH};
@@ -326,35 +326,44 @@ pub fn open_folder(app: AppHandle) {
     reveal_folder(&app);
 }
 
-/// Only videos in the clips folder or a game folder directly under it: this takes a path from the
-/// webview. Comparing exact parents leaves no way to climb out with "..".
-pub(crate) fn inside_folder(app: &AppHandle, path: &str) -> bool {
-    let folder = app.state::<Shared>().folder();
-    let path = Path::new(path);
-    let parent = path.parent();
-    is_mp4(path) && (parent == Some(folder.as_path()) || parent.and_then(Path::parent) == Some(folder.as_path()))
+/// Only videos in the clips folder or a game folder directly under it. The path comes from the
+/// webview, so every part after the folder has to be a plain name: no "..", no root, no drive.
+/// A ':' would name an alternate stream of some other file, so it's out too.
+pub(crate) fn within(folder: &Path, path: &Path) -> bool {
+    let Ok(rest) = path.strip_prefix(folder) else { return false };
+    let parts: Vec<Component> = rest.components().collect();
+    let plain = |c: &Component| matches!(c, Component::Normal(name) if !name.to_string_lossy().contains(':'));
+    (1..=2).contains(&parts.len()) && parts.iter().all(plain) && is_mp4(path)
+}
+
+/// A video file in the clips folder (see `within`), as a path to use.
+pub(crate) fn clip_file(app: &AppHandle, path: &str) -> Option<PathBuf> {
+    let path = PathBuf::from(path);
+    (within(&app.state::<Shared>().folder(), &path) && path.is_file()).then_some(path)
 }
 
 #[tauri::command]
 pub fn open_file(app: AppHandle, path: String) {
-    if inside_folder(&app, &path) {
-        open_path(Path::new(&path));
+    if let Some(path) = clip_file(&app, &path) {
+        open_path(&path);
     }
 }
 
 #[tauri::command]
 pub fn reveal_file(app: AppHandle, path: String) {
-    if !inside_folder(&app, &path) {
-        return;
-    }
+    let Some(file) = clip_file(&app, &path) else { return };
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        // raw_arg: explorer wants /select,"path" as one argument with the quotes inside it.
-        let _ = std::process::Command::new("explorer").raw_arg(format!("/select,\"{path}\"")).spawn();
+        // raw_arg: explorer wants /select,"path" as one argument with the quotes inside it. Windows
+        // names can't hold a quote, so one here could only be closing ours early.
+        if path.contains('"') {
+            return;
+        }
+        let _ = std::process::Command::new("explorer").raw_arg(format!("/select,\"{}\"", file.display())).spawn();
     }
     #[cfg(not(windows))]
-    open_path(Path::new(&path).parent().unwrap_or(Path::new(".")));
+    open_path(file.parent().unwrap_or(Path::new(".")));
 }
 
 #[tauri::command]
@@ -468,4 +477,31 @@ pub fn pause_hotkeys(app: AppHandle) {
 #[tauri::command]
 pub fn resume_hotkeys(app: AppHandle) {
     hotkeys::register(&app);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn within_takes_videos_in_the_folder_and_one_level_down() {
+        let folder = std::env::temp_dir().join("Tape");
+        assert!(within(&folder, &folder.join("a.mp4")));
+        assert!(within(&folder, &folder.join("Fortnite").join("a.DVR.MP4")));
+        assert!(!within(&folder, &folder.join("a.exe")));
+        assert!(!within(&folder, &folder.join("one").join("two").join("a.mp4")));
+        assert!(!within(&folder, &folder));
+        assert!(!within(&folder, &folder.with_file_name("Other").join("a.mp4")));
+    }
+
+    #[test]
+    fn within_refuses_climbing_out() {
+        let folder = std::env::temp_dir().join("Tape");
+        // The grandparent of this is the folder, which the old parent check let through.
+        assert!(!within(&folder, &folder.join("..").join("x.mp4")));
+        assert!(!within(&folder, &folder.join("game").join("..").join("..").join("x.mp4")));
+        assert!(!within(&folder, &folder.join("..").join("Tape").join("x.mp4")));
+        assert!(!within(&folder, Path::new("x.mp4")));
+        assert!(!within(&folder, &folder.join("clip.mp4:hidden.mp4")));
+    }
 }

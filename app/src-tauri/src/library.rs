@@ -9,7 +9,7 @@ use tape_core::mp4::trim::{self, Info};
 use tape_core::naming;
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::commands::{clip_key, inside_folder, thumbnails};
+use crate::commands::{clip_file, clip_key, thumbnails};
 use crate::state::Shared;
 
 /// Starred clips, by path. Kept in a file of their own beside the settings.
@@ -43,13 +43,11 @@ impl Stars {
 /// A finished video in the clips folder, not the recording still being written.
 fn check(app: &AppHandle, path: &str) -> Result<PathBuf, String> {
     let writing = app.state::<Shared>().status.lock().unwrap().recording_path.clone();
-    if !inside_folder(app, path) || !Path::new(path).is_file() {
-        return Err("That file isn't in the clips folder any more.".into());
-    }
+    let file = clip_file(app, path).ok_or("That file isn't in the clips folder any more.")?;
     if writing.as_deref() == Some(path) {
         return Err("That recording is still going.".into());
     }
-    Ok(PathBuf::from(path))
+    Ok(file)
 }
 
 fn thumbnail_of(app: &AppHandle, path: &Path) -> Option<(PathBuf, f64)> {

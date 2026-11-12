@@ -514,8 +514,13 @@ const Gallery = (() => {
   Cloud.onChange(() => {
     renderShare();
     const chip = box?.querySelector(".cloud-chip");
-    if (chip) chip.outerHTML = cloudChip() || "<span></span>";
-    else if (box && Cloud.usage()) box.querySelector(".gallery-bar .cap")?.insertAdjacentHTML("afterend", cloudChip());
+    const html = cloudChip();
+    if (chip) {
+      if (html) chip.outerHTML = html;
+      else chip.remove();
+    } else if (html) {
+      box?.querySelector(".gallery-bar .game-pick")?.insertAdjacentHTML("beforebegin", html); // where renderList puts it
+    }
     // Badges only; a full redraw would restart thumbnails that are loading.
     if (box) for (const el of box.querySelectorAll(".tile")) {
       const c = clips.find((x) => x.path === el.dataset.play);

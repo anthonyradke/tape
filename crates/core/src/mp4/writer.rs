@@ -112,8 +112,6 @@ impl<W: Write + Seek> Mp4Writer<W> {
         if us < origin_us {
             return Ok(());
         }
-        let cut = packet.track == 0 && packet.key && self.fragment_video_ticks >= self.video_ticks_per_fragment;
-
         let t = &mut self.tracks[packet.track as usize];
         if let Some((pts, key, data)) = t.held.take() {
             let duration = (packet.pts - pts).clamp(1, u32::MAX as i64) as u32;
@@ -123,6 +121,9 @@ impl<W: Write + Seek> Mp4Writer<W> {
                 self.fragment_video_ticks += duration as i64;
             }
         }
+        // Tested after the frame before this one is counted, so a fragment is one GOP when the
+        // keyframes are FRAGMENT_SECONDS apart, not two.
+        let cut = packet.track == 0 && packet.key && self.fragment_video_ticks >= self.video_ticks_per_fragment;
         let t = &mut self.tracks[packet.track as usize];
         if !t.started {
             t.started = true;

@@ -268,8 +268,9 @@ fn file_left_by_a_crash_still_plays() {
     assert!(boxes.contains(&"moof".to_string()));
     let info = probe(&path);
     let frames = frames_of(&info, "video")[0];
-    // Fragments close on 1 s keyframes once 2 s have passed: all but the last fragment survive.
-    assert!(frames >= 180 && frames < FRAMES as u64, "{frames} frames survived");
+    // Fragments close on the first 1 s keyframe once 2 s have passed: 0-2 s and 2-4 s are on disk,
+    // the last second is still held. Longer fragments would leave fewer.
+    assert_eq!(frames, 240, "{frames} frames survived");
     decode_clean(&path);
 }
 

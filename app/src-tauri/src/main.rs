@@ -57,10 +57,14 @@ fn main() {
         }
         Some("--share-copy") => {
             let (Some(input), Some(output)) = (args.get(2), args.get(3)) else { std::process::exit(2) };
-            if let Some(log) = args.get(4) {
+            if let Some(log) = args.get(4).filter(|a| *a != "--range") {
                 tape_engine::log::init(Path::new(log));
             }
-            std::process::exit(tape_engine::share_copy(Path::new(input), Path::new(output)));
+            // `--range <start> <end>` in seconds shares only that part.
+            let at = args.iter().position(|a| a == "--range");
+            let number = |i: usize| args.get(i).and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite());
+            let range = at.and_then(|i| Some((number(i + 1)?, number(i + 2)?)));
+            std::process::exit(tape_engine::share_copy(Path::new(input), Path::new(output), range));
         }
         _ => {}
     }

@@ -269,13 +269,18 @@ const Cloud = (() => {
 
   const linkFor = (key) => usage?.clips.find((l) => l.source === key && l.expires > Date.now());
 
-  // Converts, uploads and copies, or copies the live link it already has.
-  async function share(clip) {
+  // A share of part of a clip is a link of its own, named by the range in milliseconds as the app
+  // names it.
+  const source = (clip, range) => (range ? `${clip.key}@${Math.round(range.start * 1000)}-${Math.round(range.end * 1000)}` : clip.key);
+
+  // Converts, uploads and copies, or copies the live link it already has. `range` ({start, end} in
+  // seconds) shares only that part.
+  async function share(clip, range) {
     if (jobs.has(clip.path)) return invoke("cancel_share");
     jobs.set(clip.path, { stage: "converting", progress: 0 });
     changed();
     try {
-      const url = await invoke("share_clip", { path: clip.path });
+      const url = await invoke("share_clip", { path: clip.path, start: range?.start ?? null, end: range?.end ?? null });
       toast(`Link copied: ${url}`);
     } catch (err) {
       if (String(err) !== "Cancelled.") toast(String(err), true);
@@ -285,11 +290,11 @@ const Cloud = (() => {
     }
   }
 
-  // What the player's button says for a clip.
-  function label(clip) {
+  // What the player's button says for a clip, or for part of it.
+  function label(clip, range) {
     const job = jobs.get(clip.path);
     if (job) return `${job.stage === "uploading" ? "Uploading" : "Converting"} ${Math.round(job.progress * 100)}% · Cancel`;
-    return linkFor(clip.key) ? "Copy link again" : "Copy link";
+    return linkFor(source(clip, range)) ? "Copy link again" : "Copy link";
   }
 
   function onChange(f) {
@@ -337,7 +342,7 @@ const Cloud = (() => {
     changed();
   });
 
-  return { load, follow, ring, bars, linkRows, linkFor, share, label, onChange, left, usage: () => usage, tone };
+  return { load, follow, ring, bars, linkRows, linkFor, source, share, label, onChange, left, usage: () => usage, tone };
 })();
 
 // ---------- gallery ----------
@@ -557,6 +562,18 @@ const Gallery = (() => {
     if (!clip || !button) return;
     button.textContent = Cloud.label(clip);
     button.title = Cloud.linkFor(clip.key) ? "Already shared: copies the same link" : "Uploads a smaller copy and copies a link that works for a few days";
+    renderTrimShare();
+  }
+
+  // The trim bar's own Copy link, for just the selected part.
+  function renderTrimShare() {
+    const clip = playing();
+    const button = $("trim-share");
+    if (!clip || !trim || !button) return;
+    const range = { start: trim.start, end: trim.end };
+    button.textContent = Cloud.label(clip, range);
+    button.disabled = trim.end - trim.start < 0.5;
+    button.title = Cloud.linkFor(Cloud.source(clip, range)) ? "This part is already shared: copies the same link" : "Uploads just this part, with the mic mixed in, and copies a link. Nothing is saved here.";
   }
 
   Cloud.onChange(() => {
@@ -807,6 +824,7 @@ const Gallery = (() => {
         <div class="trim-times" id="trim-times"></div>
         <div class="sp"></div>
         <button class="btn sm ghost press" data-player="trim-cancel">Cancel</button>
+        <button class="btn sm press" id="trim-share" data-player="trim-share">Copy link</button>
         <button class="btn sm pri press" id="trim-save" data-player="trim-save">Save trimmed copy</button>
       </div>`;
     $("player-trim").hidden = false;
@@ -849,6 +867,7 @@ const Gallery = (() => {
     const save = $("trim-save");
     save.disabled = trim.saving || length < 0.5 || (trim.start <= 0.001 && trim.end >= trim.duration - 0.05);
     save.textContent = trim.saving ? "Saving…" : "Save trimmed copy";
+    renderTrimShare();
   }
 
   // Keeps the playhead marker in place and playback inside the cut.
@@ -944,7 +963,11 @@ const Gallery = (() => {
   function seek(by) {
     const v = video();
     const end = Number.isFinite(v.duration) ? v.duration : Infinity;
-    v.currentTime = Math.max(0, Math.min(end, v.currentTime + by));
+    const t = Math.max(0, Math.min(end, v.currentTime + by));
+    // While trimming, playback loops inside the cut; a seek outside it pauses there instead of
+    // jumping back, so the next I or O can land on it.
+    if (trim && (t < trim.start || t >= trim.end)) v.pause();
+    v.currentTime = t;
   }
 
   async function trimEdge(edge) {
@@ -1060,6 +1083,7 @@ const Gallery = (() => {
       case "trim-end": return trim && setEdge("end", video().currentTime);
       case "trim-cancel": return closeTrim();
       case "trim-save": return saveTrim();
+      case "trim-share": return clip && trim && Cloud.share(clip, { start: trim.start, end: trim.end });
       case "reveal": closeMenu(); return clip && invoke("reveal_file", { path: clip.path });
       case "external": closeMenu(); return clip && invoke("open_file", { path: clip.path });
       case "share": return clip && Cloud.share(clip);

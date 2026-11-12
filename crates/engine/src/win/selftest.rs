@@ -382,7 +382,7 @@ fn check_share(out: &mut String, clips: &[(String, std::path::PathBuf)]) {
     for (name, input) in clips {
         let output = clip_path(&format!("share-{name}"));
         let began = Instant::now();
-        match super::share::share_copy(input, &output, &mut |_| {}) {
+        match super::share::share_copy(input, &output, None, &mut |_| {}) {
             Ok(c) => {
                 let bytes = std::fs::metadata(&output).map(|m| m.len()).unwrap_or(0);
                 line!(out, "  from {name}: OK, {}x{}, {:.1} s of video in {:.1} s by {}, {bytes} bytes", c.width, c.height, c.seconds, began.elapsed().as_secs_f32(), c.path);

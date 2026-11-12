@@ -39,7 +39,7 @@ Requests under `/api` need `Authorization: Bearer <upload key>`.
 | Request | Does |
 |---|---|
 | `GET /api/usage` | Bytes stored, the free amount and the cap, and every live link. Deletes expired ones on the way |
-| `POST /api/clips` | Starts an upload from `{name, bytes, seconds, width, height, source}`. Refused with 507 if it wouldn't fit under the cap |
+| `POST /api/clips` | Starts an upload from `{name, bytes, seconds, width, height, source, game}`. `game` is optional and goes in the link preview's description. Refused with 507 if it wouldn't fit under the cap |
 | `PUT /api/clips/<id>/parts/<n>?upload=<upload id>` | One part of the file, `partBytes` long except the last |
 | `POST /api/clips/<id>/complete?upload=<upload id>` | Finishes the upload from `{parts: [{part, etag}]}` |
 | `PUT /api/clips/<id>/thumb` | A JPEG preview image for chat apps, optional |

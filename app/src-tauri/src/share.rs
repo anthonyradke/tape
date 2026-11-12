@@ -1,6 +1,10 @@
-//! "Copy link": makes a smaller copy of a clip in a process of its own, uploads it to the share
-//! server in parts, and puts the link on the clipboard. Also keeps the server's storage numbers,
-//! which the UI shows against the free allowance. The server is `share/worker.js`.
+//! "Copy link": makes a smaller copy of a clip (or of the part selected in trim) in a process of its
+//! own, uploads it to the share server in parts, and puts the link on the clipboard. Also keeps the
+//! server's storage numbers, which the UI shows against the free allowance. The server is
+//! `share/worker.js`.
+//!
+//! A link's `source` is the clip's key, or for part of a clip the key, "@" and the range in
+//! milliseconds, so sharing the same part again reuses its link and a different part gets its own.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -142,8 +146,26 @@ impl Shares {
     }
 }
 
-/// Where a key ended up after any number of renames.
-fn latest(moved: &HashMap<String, String>, key: &str) -> String {
+/// The clip key a link's source names, and the range after it, if any ("@1000-5000").
+fn split_source(source: &str) -> (&str, &str) {
+    source.find('@').map_or((source, ""), |at| source.split_at(at))
+}
+
+/// The source for a share of `key`, of all of it or of a range in seconds.
+fn source_for(key: &str, range: Option<(f64, f64)>) -> String {
+    match range {
+        Some((start, end)) => format!("{key}@{}-{}", (start * 1000.0).round() as u64, (end * 1000.0).round() as u64),
+        None => key.to_string(),
+    }
+}
+
+/// Where a key ended up after any number of renames. A range after it comes along.
+fn latest(moved: &HashMap<String, String>, source: &str) -> String {
+    let (key, range) = split_source(source);
+    format!("{}{range}", latest_key(moved, key))
+}
+
+fn latest_key(moved: &HashMap<String, String>, key: &str) -> String {
     let mut key = key;
     // Bounded: a rename back to an earlier name makes a loop.
     for _ in 0..32 {
@@ -160,7 +182,7 @@ fn latest(moved: &HashMap<String, String>, key: &str) -> String {
 fn follow_moves(usage: &mut Usage, moved: &mut HashMap<String, String>) -> bool {
     let mut needed = std::collections::HashSet::new();
     for link in &mut usage.clips {
-        let mut key = link.source.clone();
+        let mut key = split_source(&link.source).0.to_string();
         for _ in 0..32 {
             match moved.get(&key) {
                 Some(next) if needed.insert(key.clone()) => key = next.clone(),
@@ -189,8 +211,8 @@ pub fn moved(app: &AppHandle, old: &str, new: &str) {
         let mut usage = shares.usage.lock().unwrap();
         let Some(usage) = usage.as_mut() else { return };
         let mut changed = false;
-        for link in usage.clips.iter_mut().filter(|l| l.source == old) {
-            link.source = new.to_string();
+        for link in usage.clips.iter_mut().filter(|l| split_source(&l.source).0 == old) {
+            link.source = format!("{new}{}", split_source(&link.source).1);
             changed = true;
         }
         if !changed {
@@ -335,10 +357,13 @@ fn job(path: &str, stage: &'static str, progress: f64) -> Job {
 }
 
 /// Runs `tape --share-copy` and passes its progress on. Killed if the share is cancelled.
-fn convert(app: &AppHandle, input: &Path, output: &Path) -> Result<(u32, u32, f64), String> {
+fn convert(app: &AppHandle, input: &Path, output: &Path, range: Option<(f64, f64)>) -> Result<(u32, u32, f64), String> {
     let shared = app.state::<Shared>();
     let mut process = supervisor::own_process().map_err(|e| e.to_string())?;
     process.arg("--share-copy").arg(input).arg(output).arg(&shared.log_path);
+    if let Some((start, end)) = range {
+        process.arg("--range").arg(start.to_string()).arg(end.to_string());
+    }
     let mut child = process.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| format!("Couldn't start the conversion: {e}"))?;
     supervisor::end_with_tape(&child);
     let stdout = child.stdout.take().unwrap();
@@ -391,10 +416,25 @@ async fn upload(app: &AppHandle, server: &Server, path: &str, file: &Path, start
     Ok(())
 }
 
-async fn share(app: &AppHandle, path: &str, cancel: &Cancel) -> Result<String, String> {
+/// The game a clip is filed under: its folder, unless it sits in the clips folder itself.
+fn game_of(app: &AppHandle, path: &Path) -> String {
+    let folder = app.state::<Shared>().folder();
+    match path.parent() {
+        Some(dir) if dir != folder => dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
+/// m:ss for a link's name.
+fn clock(seconds: f64) -> String {
+    let s = seconds.max(0.0) as u64;
+    format!("{}:{:02}", s / 60, s % 60)
+}
+
+async fn share(app: &AppHandle, path: &str, range: Option<(f64, f64)>, cancel: &Cancel) -> Result<String, String> {
     let server = server(app)?;
     let input = PathBuf::from(path);
-    let key = commands::clip_key(&input).ok_or("That clip isn't there any more.")?;
+    let key = source_for(&commands::clip_key(&input).ok_or("That clip isn't there any more.")?, range);
 
     // Shared before and still live: the same link again, no upload.
     let known = app.state::<Shares>().usage.lock().unwrap().clone();
@@ -416,7 +456,7 @@ async fn share(app: &AppHandle, path: &str, cancel: &Cancel) -> Result<String, S
     let copy = dir.join(format!("{key}.mp4"));
     let converted = {
         let (app, input, copy) = (app.clone(), input.clone(), copy.clone());
-        tauri::async_runtime::spawn_blocking(move || convert(&app, &input, &copy)).await.map_err(|e| e.to_string())?
+        tauri::async_runtime::spawn_blocking(move || convert(&app, &input, &copy, range)).await.map_err(|e| e.to_string())?
     };
     let result = async {
         // Cancelling kills the conversion, which then reads as one that failed.
@@ -425,9 +465,15 @@ async fn share(app: &AppHandle, path: &str, cancel: &Cancel) -> Result<String, S
         }
         let (width, height, seconds) = converted?;
         let bytes = std::fs::metadata(&copy).map_err(|e| e.to_string())?.len();
-        let name = input.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let mut name = input.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if let Some((start, end)) = range {
+            // The part shared, before the ending the page leaves off.
+            let ending = if name.to_lowercase().ends_with(".dvr.mp4") { 8 } else if name.to_lowercase().ends_with(".mp4") { 4 } else { 0 };
+            name.insert_str(name.len() - ending, &format!(" ({} to {})", clock(start), clock(end)));
+        }
         set_job(app, job(path, "uploading", 0.0));
-        let info = json!({ "name": name, "bytes": bytes, "seconds": seconds, "width": width, "height": height, "source": key });
+        let game = game_of(app, &input);
+        let info = json!({ "name": name, "bytes": bytes, "seconds": seconds, "width": width, "height": height, "source": key, "game": game });
         // Not retried: an answer lost on the way back would leave a second, empty upload behind.
         let starting = call(&server, reqwest::Method::POST, "/api/clips", Some(info.to_string().into()), Duration::from_secs(30));
         let start = cancel.until(starting).await.ok_or(CANCELLED)??;
@@ -439,7 +485,7 @@ async fn share(app: &AppHandle, path: &str, cancel: &Cancel) -> Result<String, S
         }
         // The gallery's thumbnail, for the preview chat apps show. Optional.
         let thumbs = commands::thumbnails(&app.state::<Shared>().thumbnails);
-        if let Some(jpeg) = thumbs.get(&key).and_then(|(p, _)| std::fs::read(p).ok()) {
+        if let Some(jpeg) = thumbs.get(split_source(&key).0).and_then(|(p, _)| std::fs::read(p).ok()) {
             let _ = call(&server, reqwest::Method::PUT, &format!("/api/clips/{id}/thumb"), Some(jpeg.into()), Duration::from_secs(30)).await;
         }
         Ok(start["url"].as_str().unwrap_or_default().to_string())
@@ -450,12 +496,18 @@ async fn share(app: &AppHandle, path: &str, cancel: &Cancel) -> Result<String, S
     result
 }
 
-/// Shares a clip and copies its link. One at a time: conversion uses the GPU beside a game.
+/// Shares a clip, or the part of it from `start` to `end` seconds, and copies its link. One at a
+/// time: conversion uses the GPU beside a game.
 #[tauri::command]
-pub async fn share_clip(app: AppHandle, path: String) -> Result<String, String> {
+pub async fn share_clip(app: AppHandle, path: String, start: Option<f64>, end: Option<f64>) -> Result<String, String> {
     if commands::clip_file(&app, &path).is_none() {
         return Err("Only clips in the clips folder can be shared.".into());
     }
+    let range = match (start, end) {
+        (None, None) => None,
+        (Some(start), Some(end)) if start.is_finite() && end.is_finite() && start >= 0.0 && end - start >= tape_core::mp4::trim::MIN_SECONDS => Some((start, end)),
+        _ => return Err("That part is too short to share.".into()),
+    };
     let cancel = Arc::new(Cancel::default());
     let busy = {
         let shares = app.state::<Shares>();
@@ -469,7 +521,7 @@ pub async fn share_clip(app: AppHandle, path: String) -> Result<String, String> 
     if busy {
         return Err("Another clip is still being shared. Wait for it to finish.".into());
     }
-    let result = share(&app, &path, &cancel).await;
+    let result = share(&app, &path, range, &cancel).await;
     *app.state::<Shares>().cancel.lock().unwrap() = None;
     match &result {
         Ok(url) => {
@@ -535,7 +587,7 @@ pub fn clip_saved(app: &AppHandle, request: u64, path: String) {
     }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let result = share_clip(app.clone(), path).await;
+        let result = share_clip(app.clone(), path, None, None).await;
         let sounds = app.state::<Shared>().settings.lock().unwrap().sounds;
         match result {
             Ok(url) => {
@@ -738,6 +790,20 @@ mod tests {
         let mut again = Usage { clips: vec![link("a"), link("x")], ..Usage::default() };
         assert!(!follow_moves(&mut again, &mut moved));
         assert_eq!(again.clips[0].source, "c");
+    }
+
+    #[test]
+    fn part_of_a_clip_is_its_own_link_and_follows_renames() {
+        assert_eq!(source_for("abc", None), "abc");
+        assert_eq!(source_for("abc", Some((1.5, 4.25))), "abc@1500-4250");
+        assert_ne!(source_for("abc", Some((1.5, 4.25))), source_for("abc", Some((1.5, 5.0))));
+        let link = |source: &str| Link { source: source.into(), ..Link::default() };
+        let mut usage = Usage { clips: vec![link("a"), link("a@0-2000")], ..Usage::default() };
+        let mut moved: HashMap<String, String> = [("a".to_string(), "b".to_string())].into();
+        follow_moves(&mut usage, &mut moved);
+        assert_eq!(usage.clips[0].source, "b");
+        assert_eq!(usage.clips[1].source, "b@0-2000");
+        assert!(moved.contains_key("a"), "still needed");
     }
 
     #[test]

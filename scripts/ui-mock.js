@@ -143,6 +143,7 @@
             emit("share", { path: args.path, stage, progress });
           }
           const l = link(c, 7, 80e6);
+          if (args.start != null) l.source = `${c.key}@${Math.round(args.start * 1000)}-${Math.round(args.end * 1000)}`;
           usage.clips.unshift(l);
           usage.used += l.bytes;
           emit("share-usage", structuredClone(usage));

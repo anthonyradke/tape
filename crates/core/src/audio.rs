@@ -298,6 +298,118 @@ pub fn to_i16(samples: &[f32], out: &mut Vec<u8>) {
     }
 }
 
+/// Mixes already-recorded tracks into one, for the shared copy of a clip whose game audio and mic
+/// were kept apart: chat apps and browsers play only the first track. Each track arrives as decoded
+/// stereo blocks stamped with the frame (sample number) they start at, in whatever order the
+/// decoder hands them out; gaps read as silence and overlaps are cut. Mixed audio comes out once
+/// every track still going has reached that far, so a track that runs behind is waited for. The
+/// tracks were recorded at their volume settings already, so they're summed as they are, through
+/// the same limiter the live mixer uses.
+pub struct Mixdown {
+    lanes: Vec<Lane>,
+    /// The next frame to come out, once known.
+    next: Option<i64>,
+    /// Frames before this are dropped; from the first frame any track has when None.
+    from: Option<i64>,
+    /// Nothing at or after this frame comes out.
+    until: i64,
+}
+
+#[derive(Default)]
+struct Lane {
+    /// Frame of the first one in `buf`, once any has arrived.
+    start: Option<i64>,
+    buf: VecDeque<f32>,
+    ended: bool,
+}
+
+impl Lane {
+    fn end_frame(&self) -> Option<i64> {
+        self.start.map(|s| s + (self.buf.len() / 2) as i64)
+    }
+
+    /// Drops what comes before `frame`.
+    fn advance(&mut self, frame: i64) {
+        let Some(start) = self.start else { return };
+        let drop = (frame - start).clamp(0, (self.buf.len() / 2) as i64);
+        self.buf.drain(..drop as usize * 2);
+        self.start = Some(start + drop);
+    }
+}
+
+impl Mixdown {
+    pub fn new(tracks: usize, from: Option<i64>, until: Option<i64>) -> Self {
+        Mixdown { lanes: (0..tracks).map(|_| Lane::default()).collect(), next: None, from, until: until.unwrap_or(i64::MAX) }
+    }
+
+    pub fn push(&mut self, track: usize, at: i64, stereo: &[f32]) {
+        let Some(lane) = self.lanes.get_mut(track) else { return };
+        let frames = (stereo.len() / 2) as i64;
+        let expected = *lane.start.get_or_insert(at) + (lane.buf.len() / 2) as i64;
+        // Behind where this track had got to: only the part after it is new.
+        let skip = (expected - at).clamp(0, frames);
+        if at > expected {
+            lane.buf.extend(std::iter::repeat_n(0.0, (at - expected) as usize * 2));
+        }
+        lane.buf.extend(&stereo[skip as usize * 2..frames as usize * 2]);
+    }
+
+    /// The track has nothing more.
+    pub fn end(&mut self, track: usize) {
+        if let Some(lane) = self.lanes.get_mut(track) {
+            lane.ended = true;
+        }
+    }
+
+    /// Everything that will ever come out has.
+    pub fn done(&self) -> bool {
+        self.next.is_some_and(|n| n >= self.until) || self.lanes.iter().all(|l| l.ended && l.buf.is_empty())
+    }
+
+    /// Mixes what every track has reached into `out` (replacing it) and returns the frame it
+    /// starts at, or None if nothing is ready.
+    pub fn pull(&mut self, out: &mut Vec<f32>) -> Option<i64> {
+        // A track that hasn't started yet may still start before the others.
+        if self.lanes.iter().any(|l| l.start.is_none() && !l.ended) {
+            return None;
+        }
+        let next = match self.next {
+            Some(n) => n,
+            None => {
+                let first = self.lanes.iter().filter_map(|l| l.start).min()?;
+                self.from.map_or(first, |f| f.max(first))
+            }
+        };
+        let going = self.lanes.iter().filter(|l| !l.ended).filter_map(Lane::end_frame).min();
+        let ready = going.or_else(|| self.lanes.iter().filter_map(Lane::end_frame).max())?.min(self.until);
+        if ready <= next {
+            return None;
+        }
+        out.clear();
+        out.resize((ready - next) as usize * 2, 0.0);
+        let mut sources = 0;
+        for lane in &mut self.lanes {
+            lane.advance(next);
+            let Some(start) = lane.start else { continue };
+            let skip = (start - next).max(0) as usize * 2;
+            let take = out.len().saturating_sub(skip).min(lane.buf.len());
+            if take > 0 {
+                sources += 1;
+                let (a, b) = lane.buf.as_slices();
+                let src: Vec<f32> = a.iter().chain(b).take(take).copied().collect();
+                add_scaled(&mut out[skip..skip + take], &src, 1.0);
+            }
+            lane.advance(ready);
+        }
+        // One track alone was limited when it was recorded and goes through untouched.
+        if sources > 1 {
+            limit(out);
+        }
+        self.next = Some(ready);
+        Some(next)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -503,5 +615,74 @@ mod tests {
         let mut out = vec![];
         to_i16(&[2.0, -2.0], &mut out);
         assert_eq!(out, [0xff, 0x7f, 0x01, 0x80]);
+    }
+
+    fn pull_all(m: &mut Mixdown) -> Vec<(i64, Vec<f32>)> {
+        let mut got = Vec::new();
+        let mut out = Vec::new();
+        while let Some(at) = m.pull(&mut out) {
+            got.push((at, out.clone()));
+        }
+        got
+    }
+
+    #[test]
+    fn mixdown_sums_tracks_by_their_timestamps() {
+        let mut m = Mixdown::new(2, None, None);
+        m.push(0, 100, &[0.1; 8]);
+        // Nothing until the mic has said where it starts.
+        assert!(pull_all(&mut m).is_empty());
+        m.push(1, 102, &[0.2; 8]);
+        // Only as far as both have got: frames 100-103, the mic from 102.
+        let got = pull_all(&mut m);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0, 100);
+        let expect = [0.1, 0.1, 0.1, 0.1, 0.1 + 0.2, 0.1 + 0.2, 0.1 + 0.2, 0.1 + 0.2];
+        assert!(got[0].1.iter().zip(expect).all(|(a, b)| (a - b).abs() < 1e-6), "{:?}", got[0].1);
+        m.end(0);
+        m.end(1);
+        let rest = pull_all(&mut m);
+        assert_eq!(rest[0].0, 104);
+        assert_eq!(rest[0].1.len(), 4);
+        assert!(m.done());
+    }
+
+    #[test]
+    fn mixdown_fills_gaps_cuts_overlaps_and_keeps_to_the_range() {
+        let mut m = Mixdown::new(1, Some(10), Some(20));
+        m.push(0, 5, &[0.5; 10]); // frames 5-9, all before the range
+        m.push(0, 12, &[0.25; 4]); // a gap at 10-11
+        m.push(0, 13, &[0.9; 4]); // overlaps frame 13
+        m.push(0, 15, &[0.3; 20]); // runs past the end
+        let got = pull_all(&mut m);
+        let all: Vec<f32> = got.iter().flat_map(|g| g.1.clone()).collect();
+        assert_eq!(got[0].0, 10);
+        assert_eq!(all.len(), 20, "frames 10-19 only");
+        assert_eq!(&all[..4], [0.0; 4]);
+        assert_eq!(&all[4..8], [0.25; 4]);
+        assert_eq!(&all[8..10], [0.9; 2]);
+        assert_eq!(&all[10..], [0.3; 10]);
+        assert!(m.done());
+    }
+
+    #[test]
+    fn mixdown_limits_only_a_real_mix() {
+        let mut one = Mixdown::new(1, None, None);
+        one.push(0, 0, &[0.95; 4]);
+        assert_eq!(pull_all(&mut one)[0].1, [0.95; 4]);
+        let mut two = Mixdown::new(2, None, None);
+        two.push(0, 0, &[0.7; 4]);
+        two.push(1, 0, &[0.7; 4]);
+        let mixed = &pull_all(&mut two)[0].1;
+        assert!(mixed.iter().all(|&s| s > 0.8 && s < 1.0), "{mixed:?}");
+    }
+
+    #[test]
+    fn mixdown_goes_on_without_a_track_that_ends_or_never_starts() {
+        let mut m = Mixdown::new(2, None, None);
+        m.push(0, 0, &[0.1; 6]);
+        m.end(1);
+        let got = pull_all(&mut m);
+        assert_eq!(got[0].1.len(), 6);
     }
 }

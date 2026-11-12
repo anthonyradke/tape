@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::packet::Codec;
@@ -52,6 +54,17 @@ impl Default for Hotkeys {
     }
 }
 
+/// What one game changes from the global settings while it's the game in front. Unset fields
+/// keep the global value.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct GameSettings {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replay_seconds: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bitrate_mbps: Option<u32>,
+}
+
 pub const FOLLOW_DEFAULT: &str = "default";
 pub const NO_DEVICE: &str = "";
 
@@ -94,6 +107,9 @@ pub struct Settings {
     pub share_server: String,
     /// Its upload key, which lets this app upload and delete links.
     pub share_key: String,
+    /// Replay length and bitrate by game name (the clip folder's name), used while that game is
+    /// the last one seen in front. See `for_game`.
+    pub per_game: BTreeMap<String, GameSettings>,
 }
 
 impl Default for Settings {
@@ -122,6 +138,7 @@ impl Default for Settings {
             sounds: true,
             share_server: String::new(),
             share_key: String::new(),
+            per_game: BTreeMap::new(),
         }
     }
 }
@@ -137,17 +154,33 @@ impl Settings {
     /// from a newer version) falls back to its default and the rest is kept, so one bad value
     /// can't wipe the hotkeys, folder and share key. The flag says whether anything was dropped.
     pub fn from_json_lenient(text: &str) -> (Settings, bool) {
-        let Ok(serde_json::Value::Object(file)) = serde_json::from_str::<serde_json::Value>(text) else {
+        let Ok(serde_json::Value::Object(mut file)) = serde_json::from_str::<serde_json::Value>(text) else {
             return (Settings::default(), true);
         };
         let Ok(serde_json::Value::Object(mut accepted)) = serde_json::to_value(Settings::default()) else {
             return (Settings::default(), true);
         };
         let mut dropped = false;
+        // A map, not a struct: `merge` would leave out every game it doesn't already have.
+        let games = file.remove("perGame");
         merge(&mut accepted, &file, &mut dropped, &|candidate| {
             serde_json::from_value::<Settings>(serde_json::Value::Object(candidate.clone())).is_ok()
         });
-        let settings = serde_json::from_value(serde_json::Value::Object(accepted)).unwrap_or_default();
+        let mut settings: Settings = serde_json::from_value(serde_json::Value::Object(accepted)).unwrap_or_default();
+        match games {
+            None => {}
+            Some(serde_json::Value::Object(games)) => {
+                for (name, value) in games {
+                    let game = serde_json::from_value::<GameSettings>(value.clone()).unwrap_or_else(|_| {
+                        dropped = true;
+                        let field = |key: &str| value.get(key).and_then(|v| v.as_u64()).and_then(|v| u32::try_from(v).ok());
+                        GameSettings { replay_seconds: field("replaySeconds"), bitrate_mbps: field("bitrateMbps") }
+                    });
+                    settings.per_game.insert(name, game);
+                }
+            }
+            Some(_) => dropped = true,
+        }
         (settings, dropped)
     }
 
@@ -164,6 +197,17 @@ impl Settings {
         if self.resolution != 0 {
             self.resolution = self.resolution.clamp(144, 4320);
         }
+        self.per_game = std::mem::take(&mut self.per_game)
+            .into_iter()
+            .map(|(name, game)| {
+                let game = GameSettings {
+                    replay_seconds: game.replay_seconds.map(|s| s.clamp(5, 3600)),
+                    bitrate_mbps: game.bitrate_mbps.map(|b| b.clamp(1, 500)),
+                };
+                (name.trim().to_string(), game)
+            })
+            .filter(|(name, _)| !name.is_empty())
+            .collect();
         self.share_server = self.share_server.trim().trim_end_matches('/').to_string();
         self.share_key = self.share_key.trim().to_string();
         self
@@ -202,13 +246,30 @@ impl Settings {
         (w as u32 & !1, h as u32 & !1)
     }
 
+    /// These settings with `game`'s replay length and bitrate in place of the global ones, if it
+    /// has any. Names match whatever their case, as folder names do on Windows.
+    pub fn for_game(&self, game: Option<&str>) -> Settings {
+        let mut out = self.clone();
+        let found = game.and_then(|g| self.per_game.iter().find(|(name, _)| name.eq_ignore_ascii_case(g)));
+        if let Some((_, game)) = found {
+            out.replay_seconds = game.replay_seconds.unwrap_or(out.replay_seconds);
+            out.bitrate_mbps = game.bitrate_mbps.unwrap_or(out.bitrate_mbps);
+        }
+        out
+    }
+
     /// Whether changing from `other` means restarting the encoder.
     pub fn video_differs(&self, other: &Settings) -> bool {
+        self.bitrate_mbps != other.bitrate_mbps || self.restarts_video(other)
+    }
+
+    /// Whether changing from `other` needs a new encoder session. The bitrate alone doesn't: the
+    /// running session takes a new one.
+    pub fn restarts_video(&self, other: &Settings) -> bool {
         self.monitor != other.monitor
             || self.resolution != other.resolution
             || self.fps != other.fps
             || self.codec != other.codec
-            || self.bitrate_mbps != other.bitrate_mbps
             || self.preset != other.preset
             || self.capture != other.capture
             || self.show_cursor != other.show_cursor
@@ -389,10 +450,44 @@ mod tests {
     }
 
     #[test]
+    fn a_game_overrides_only_what_it_sets() {
+        let mut s = Settings::default();
+        s.per_game.insert("Fortnite".into(), GameSettings { replay_seconds: Some(300), bitrate_mbps: None });
+        s.per_game.insert("Counter-Strike 2".into(), GameSettings { replay_seconds: None, bitrate_mbps: Some(80) });
+        let fortnite = s.for_game(Some("fortnite"));
+        assert_eq!((fortnite.replay_seconds, fortnite.bitrate_mbps), (300, 50));
+        let cs = s.for_game(Some("Counter-Strike 2"));
+        assert_eq!((cs.replay_seconds, cs.bitrate_mbps), (120, 80));
+        assert_eq!(s.for_game(Some("Minecraft")), s);
+        assert_eq!(s.for_game(None), s);
+    }
+
+    #[test]
+    fn per_game_settings_load_one_game_at_a_time() {
+        let text = r#"{"fps": 144, "perGame": {"Fortnite": {"replaySeconds": 300}, "CS2": {"bitrateMbps": 80, "replaySeconds": "long"}, "Odd": 5}}"#;
+        let (s, dropped) = lenient(text);
+        assert!(dropped);
+        assert_eq!(s.fps, 144);
+        assert_eq!(s.per_game["Fortnite"], GameSettings { replay_seconds: Some(300), bitrate_mbps: None });
+        assert_eq!(s.per_game["CS2"], GameSettings { replay_seconds: None, bitrate_mbps: Some(80) });
+        assert_eq!(s.per_game["Odd"], GameSettings::default());
+        let (s, dropped) = lenient(r#"{"perGame": {"Fortnite": {"bitrateMbps": 9999}, " ": {}}}"#);
+        assert!(!dropped);
+        let s = s.normalized();
+        assert_eq!(s.per_game.len(), 1);
+        assert_eq!(s.per_game["Fortnite"].bitrate_mbps, Some(500));
+        // Unset fields stay out of the file.
+        assert_eq!(serde_json::to_string(&s.per_game).unwrap(), r#"{"Fortnite":{"bitrateMbps":500}}"#);
+        assert!(lenient(r#"{"perGame": []}"#).1);
+    }
+
+    #[test]
     fn only_encoder_settings_restart_the_encoder() {
         let a = Settings::default();
         assert!(!a.video_differs(&Settings { replay_seconds: 30, sounds: false, ..a.clone() }));
         assert!(a.video_differs(&Settings { bitrate_mbps: 10, ..a.clone() }));
+        assert!(!a.restarts_video(&Settings { bitrate_mbps: 10, ..a.clone() }));
+        assert!(a.restarts_video(&Settings { fps: 30, ..a.clone() }));
         assert!(a.audio_differs(&Settings { microphone: "x".into(), ..a.clone() }));
         assert!(a.audio_differs(&Settings { exclude_tape_audio: false, ..a.clone() }));
         assert!(!a.audio_differs(&Settings { mic_volume: 50, mic_delay_ms: 80, ..a.clone() }));

@@ -109,9 +109,17 @@ fn panic_text(panic: &Box<dyn std::any::Any + Send>) -> String {
 
 struct Engine {
     backend: Arc<dyn Backend>,
+    /// What's running: `requested` with the current game's replay length and bitrate, less any
+    /// encoder change waiting for a recording to end.
     settings: Settings,
-    /// Encoder settings that changed during a recording, applied when it stops.
-    deferred: Option<Settings>,
+    /// The settings as the host last sent them.
+    requested: Settings,
+    /// The game whose settings are in use, the last one seen in front.
+    game: Option<String>,
+    /// Encoder settings changed during a recording, to apply from `requested` when it stops.
+    deferred: bool,
+    /// Live bitrate for the video thread, see `VideoContext::bitrate_mbps`.
+    bitrate: Arc<AtomicU32>,
     sink: Arc<Sink>,
     clock: Clock,
     events: Sender<Event>,
@@ -143,8 +151,17 @@ impl Engine {
         }
     }
 
+    /// Also switches to the settings of a game that has come to the front. The last game seen
+    /// keeps its settings while the user is alt-tabbed out of it, since they're still playing it.
     fn track_game(&mut self) {
         self.games.update(self.backend.foreground(), Instant::now());
+        let game = self.games.last().map(str::to_string);
+        if game != self.game {
+            self.game = game;
+            if self.configured && !self.requested.per_game.is_empty() {
+                self.configure(self.requested.clone());
+            }
+        }
     }
 
     /// `game_age`: how long ago a game can have been in front and still be the one this is of.
@@ -195,7 +212,13 @@ impl Engine {
 
     fn spawn_video(&self) -> Worker {
         let stop = Arc::new(AtomicBool::new(false));
-        let ctx = VideoContext { sink: self.sink.clone(), clock: self.clock, stop: stop.clone(), stats: self.stats.clone() };
+        let ctx = VideoContext {
+            sink: self.sink.clone(),
+            clock: self.clock,
+            stop: stop.clone(),
+            stats: self.stats.clone(),
+            bitrate_mbps: self.bitrate.clone(),
+        };
         let (backend, settings) = (self.backend.clone(), self.settings.clone());
         let (fail_stats, beat_stats, clock) = (self.stats.clone(), self.stats.clone(), self.clock);
         self.stats.beat(&self.clock);
@@ -249,12 +272,17 @@ impl Engine {
         }
     }
 
-    fn configure(&mut self, new: Settings) {
-        let new = new.normalized();
-        let restart_video = new.video_differs(&self.settings);
+    fn configure(&mut self, requested: Settings) {
+        self.requested = requested.normalized();
+        let new = self.requested.for_game(self.game.as_deref());
+        if new.replay_seconds != self.settings.replay_seconds || new.bitrate_mbps != self.settings.bitrate_mbps {
+            log!("settings for {}: {} s replay, {} Mbps", self.game.as_deref().unwrap_or("no game yet"), new.replay_seconds, new.bitrate_mbps);
+        }
+        let restart_video = new.restarts_video(&self.settings);
+        let retune = new.bitrate_mbps != self.settings.bitrate_mbps;
         let restart_audio = new.audio_differs(&self.settings);
         self.configured = true;
-        if self.sink.is_recording() && (restart_video || restart_audio) {
+        if self.sink.is_recording() && (restart_video || retune || restart_audio) {
             // A change like this would split the file. It waits for the recording to end;
             // everything else (folder, volumes, replay length) applies now.
             let mut now = new.clone();
@@ -270,11 +298,11 @@ impl Engine {
             now.exclude_tape_audio = self.settings.exclude_tape_audio;
             now.microphone = self.settings.microphone.clone();
             now.separate_tracks = self.settings.separate_tracks;
-            self.deferred = Some(new);
+            self.deferred = true;
             self.apply(now, false, false);
             return;
         }
-        self.deferred = None;
+        self.deferred = false;
         self.apply(new, restart_video, restart_audio);
     }
 
@@ -291,6 +319,8 @@ impl Engine {
         self.audio_shared.system_volume.store(new.system_volume, Ordering::Relaxed);
         self.audio_shared.mic_volume.store(new.mic_volume, Ordering::Relaxed);
         self.audio_shared.mic_delay_ms.store(new.mic_delay_ms, Ordering::Relaxed);
+        // Before the pipeline (re)starts, which reads it; a running one picks it up as it goes.
+        self.bitrate.store(new.bitrate_mbps, Ordering::Relaxed);
         self.sink.set_replay(new.replay, new.replay_seconds);
         self.settings = new;
         self.reconcile();
@@ -346,8 +376,8 @@ impl Engine {
         if let Some(finished) = self.sink.stop_recording() {
             self.report(finished, true);
         }
-        if let Some(settings) = self.deferred.take() {
-            self.configure(settings);
+        if std::mem::take(&mut self.deferred) {
+            self.configure(self.requested.clone());
         }
         self.reconcile();
     }
@@ -514,7 +544,10 @@ pub fn run(backend: Arc<dyn Backend>, input: impl BufRead + Send + 'static, mut 
     let mut engine = Engine {
         sink,
         backend,
-        deferred: None,
+        requested: settings.clone(),
+        game: None,
+        deferred: false,
+        bitrate: Arc::new(AtomicU32::new(settings.bitrate_mbps)),
         clock: Clock::new(),
         events: events.clone(),
         video: None,
@@ -556,8 +589,8 @@ pub fn run(backend: Arc<dyn Backend>, input: impl BufRead + Send + 'static, mut 
                 let _ = events.send(Event::Marked { seconds });
             }
             Ok(Command::SetReplay { on }) => {
-                // Start from a change still waiting for a recording to end, or it would be dropped.
-                let mut settings = engine.deferred.clone().unwrap_or_else(|| engine.settings.clone());
+                // From what the host asked for, which includes a change still waiting for a recording to end.
+                let mut settings = engine.requested.clone();
                 settings.replay = on;
                 engine.configure(settings);
             }

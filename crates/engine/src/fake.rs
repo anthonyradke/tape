@@ -13,6 +13,7 @@ use tape_core::packet::{from_micros, Codec, VideoFormat, AAC_FRAME, AUDIO_RATE};
 use tape_core::settings::Settings;
 
 use crate::backend::{AacEncoder, AudioBlock, AudioInput, Backend, Clock, Source, VideoContext};
+use crate::log;
 
 /// Reads length-prefixed frames: a little-endian u32, then one access unit.
 fn read_frames(path: &str) -> Vec<Vec<u8>> {
@@ -154,9 +155,21 @@ impl Backend for Fake {
         let mut force_key = true;
         let period = 1_000_000 / settings.fps as i64;
         let mut next_tick = ctx.clock.now_us();
+        // Logged like the real pipeline, so tests can tell a new session from a change in place.
+        let live = |fallback: u32| match ctx.bitrate_mbps.load(Ordering::Relaxed) {
+            0 => fallback,
+            mbps => mbps,
+        };
+        let mut bitrate = live(settings.bitrate_mbps);
+        log!("video: fake pipeline started at {bitrate} Mbps");
         loop {
             if ctx.stop.load(Ordering::Relaxed) {
                 return Ok(());
+            }
+            if live(bitrate) != bitrate {
+                bitrate = live(bitrate);
+                log!("video: bitrate now {bitrate} Mbps, same session");
+                force_key = true;
             }
             ctx.stats.beat(&ctx.clock);
             if self.hang_after > 0 && produced >= self.hang_after {

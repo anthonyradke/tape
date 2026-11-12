@@ -165,7 +165,7 @@ fn check_encode(out: &mut String, settings: &Settings, codec: Codec, label: &str
     let stop = Arc::new(AtomicBool::new(false));
     let stats = Arc::new(VideoStats::default());
     let clock = Clock::new();
-    let ctx = VideoContext { sink: sink.clone(), clock, stop: stop.clone(), stats: stats.clone() };
+    let ctx = VideoContext { sink: sink.clone(), clock, stop: stop.clone(), stats: stats.clone(), bitrate_mbps: Default::default() };
     let thread = {
         let settings = settings.clone();
         std::thread::spawn(move || super::video::run(&settings, &ctx))

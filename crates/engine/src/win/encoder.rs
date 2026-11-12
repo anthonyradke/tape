@@ -165,6 +165,10 @@ pub struct Encoder {
     width: u32,
     height: u32,
     frame: u32,
+    /// What the session was set up with, kept for `set_bitrate`. The config is boxed so the pointer
+    /// to it inside `init` stays good.
+    config: Box<NV_ENC_CONFIG>,
+    init: NV_ENC_INITIALIZE_PARAMS,
 }
 
 impl Encoder {
@@ -172,7 +176,9 @@ impl Encoder {
     pub fn new(gfx: &Gfx) -> Result<Encoder, String> {
         let library = Library::load()?;
         let session = open_session(&library, &gfx.device)?;
-        Ok(Encoder { library, session, bitstream: null_mut(), registered: null_mut(), width: 0, height: 0, frame: 0 })
+        // Plain C structs, for which all zeros is a valid value; `initialize` fills them in.
+        let (config, init) = unsafe { (Box::new(zeroed()), zeroed()) };
+        Ok(Encoder { library, session, bitstream: null_mut(), registered: null_mut(), width: 0, height: 0, frame: 0, config, init })
     }
 
     /// The largest frame this session takes for `codec`.
@@ -294,8 +300,11 @@ impl Encoder {
             init.frameRateDen = 1;
             init.enablePTD = 1;
             init.enableEncodeAsync = 0;
-            init.encodeConfig = &mut config;
+            *self.config = config;
+            init.encodeConfig = &mut *self.config;
             check(api.nvEncInitializeEncoder.unwrap()(self.session, &mut init), "initialize")?;
+            self.init = init;
+            let config = *self.config;
             log!(
                 "nvenc: {} {}x{} at {} fps, preset {:?} (P{}), high quality tuning, VBR {} / {} kbps, vbv {} kbit, gop {gop}, no B-frames, API {NVENCAPI_MAJOR_VERSION}.{NVENCAPI_MINOR_VERSION}",
                 super::codec_name(codec),
@@ -331,6 +340,27 @@ impl Encoder {
             self.registered = register.registeredResource;
         }
         Ok(())
+    }
+
+    /// Changes the bitrate of the running session (nvEncReconfigureEncoder), which keeps its
+    /// output going with no new session and so no gap. The next frame is an IDR, with the rate
+    /// control starting fresh from it.
+    pub fn set_bitrate(&mut self, settings: &Settings) -> Result<(), String> {
+        let api = &self.library.api;
+        let rc = &mut self.config.rcParams;
+        rc.averageBitRate = settings.bitrate_mbps * 1_000_000;
+        rc.maxBitRate = settings.peak_kbps() * 1000;
+        rc.vbvBufferSize = rc.maxBitRate;
+        rc.vbvInitialDelay = rc.maxBitRate;
+        unsafe {
+            let mut params: NV_ENC_RECONFIGURE_PARAMS = zeroed();
+            params.version = RECONFIGURE_PARAMS_VER;
+            params.reInitEncodeParams = self.init;
+            params.reInitEncodeParams.encodeConfig = &mut *self.config;
+            params.set_resetEncoder(1);
+            params.set_forceIDR(1);
+            check(api.nvEncReconfigureEncoder.unwrap()(self.session, &mut params), "reconfigure")
+        }
     }
 
     /// Encodes the registered texture. Blocks until the bitstream is ready.

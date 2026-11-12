@@ -49,6 +49,15 @@ fn open_capture(
 }
 
 pub fn run(settings: &Settings, ctx: &VideoContext) -> Result<(), String> {
+    // The live bitrate wins over the one these settings were made with: after a failure the worker
+    // starts over with the settings it was spawned with, which may be older.
+    let mut settings = settings.clone();
+    let live = |fallback: u32| match ctx.bitrate_mbps.load(Ordering::Relaxed) {
+        0 => fallback,
+        mbps => mbps,
+    };
+    settings.bitrate_mbps = live(settings.bitrate_mbps);
+    let settings = &mut settings;
     super::com_init();
     raise_thread("Capture");
 
@@ -86,6 +95,8 @@ pub fn run(settings: &Settings, ctx: &VideoContext) -> Result<(), String> {
     let mut force_key = true;
     let mut has_image = false;
     let mut changed = false;
+    // The bitrate changed in place, and the parameter sets of the next keyframe may differ.
+    let mut retuned = false;
 
     while !ctx.stop.load(Ordering::Relaxed) {
         ctx.stats.beat(&ctx.clock);
@@ -162,6 +173,14 @@ pub fn run(settings: &Settings, ctx: &VideoContext) -> Result<(), String> {
         }
         // The output texture holds garbage until the first conversion, so nothing is encoded
         // before then. An unchanged screen re-encodes the same texture, which costs almost nothing.
+        if has_image && live(settings.bitrate_mbps) != settings.bitrate_mbps {
+            // Same session, so no gap and the replay buffer stays. A failure here ends the
+            // pipeline, and the restart that follows opens a new session at the new bitrate.
+            settings.bitrate_mbps = live(settings.bitrate_mbps);
+            encoder.set_bitrate(settings)?;
+            log!("video: bitrate now {} Mbps, same session", settings.bitrate_mbps);
+            retuned = true;
+        }
         if has_image {
             force_key |= ctx.sink.take_keyframe_request();
             let pts = from_micros(due, fps).max(last_pts + 1);
@@ -175,6 +194,16 @@ pub fn run(settings: &Settings, ctx: &VideoContext) -> Result<(), String> {
                 let key = parsed.config.is_some();
                 if format.config.is_empty() {
                     format.config = parsed.config.unwrap_or_default();
+                } else if retuned && key {
+                    // The first keyframe at the new bitrate. Parameter sets that changed with it
+                    // (a higher level, say) can't share a track with the old ones, so the sink
+                    // takes them as a new format.
+                    retuned = false;
+                    let config = parsed.config.clone().unwrap_or_default();
+                    if config != format.config {
+                        log!("video: parameter sets changed with the bitrate");
+                        format.config = config;
+                    }
                 }
                 if format.config.is_empty() {
                     force_key = true; // nothing can be written until the parameter sets are known

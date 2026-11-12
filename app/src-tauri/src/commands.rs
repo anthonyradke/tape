@@ -55,6 +55,8 @@ pub struct View {
     health: Health,
     hotkey_errors: Vec<String>,
     folder: String,
+    /// Game folders in the clips folder, which the per-game settings offer to add.
+    games: Vec<String>,
     clips: Vec<ClipFile>,
     autostart: bool,
     overlay_running: bool,
@@ -238,6 +240,15 @@ pub fn view(app: AppHandle) -> View {
     let folder = shared.folder();
     let mut clips = all_clips(&app);
     clips.truncate(RECENT);
+    let mut games: Vec<String> = std::fs::read_dir(&folder)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| name != tape_core::game::DESKTOP)
+        .collect();
+    games.sort_by_key(|name| name.to_lowercase());
     let view = View {
         replay_ram: settings.replay_ram_bytes(),
         status: shared.status.lock().unwrap().clone(),
@@ -245,6 +256,7 @@ pub fn view(app: AppHandle) -> View {
         health: shared.health.lock().unwrap().clone(),
         hotkey_errors: shared.hotkey_errors.lock().unwrap().clone(),
         clips,
+        games,
         folder: folder.display().to_string(),
         autostart: app.autolaunch().is_enabled().unwrap_or(false),
         overlay_running: overlay_running(),

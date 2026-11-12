@@ -22,6 +22,7 @@ pub const MAP_INPUT_RESOURCE_VER: u32 = struct_version(4);
 pub const REGISTER_RESOURCE_VER: u32 = struct_version(4);
 pub const CAPS_PARAM_VER: u32 = struct_version(1);
 pub const RC_PARAMS_VER: u32 = struct_version(1);
+pub const RECONFIGURE_PARAMS_VER: u32 = struct_version(1) | (1 << 31);
 
 const fn guid(data1: u32, data2: u16, data3: u16, data4: [u8; 8]) -> GUID {
     GUID { Data1: data1, Data2: data2, Data3: data3, Data4: data4 }

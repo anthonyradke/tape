@@ -9,6 +9,7 @@
     systemVolume: 100, micVolume: 100, separateTracks: false,
     shareServer: q.get("cloud") === "off" ? "" : "https://tape-clips.example.workers.dev", shareKey: q.get("cloud") === "off" ? "" : "not-a-real-key",
     hotkeys: { saveClip: "Alt+F10", toggleRecording: "Alt+F9", toggleReplay: "Alt+Shift+F10", overlay: "Alt+Z", marker: "Alt+F8", shortClip: "Alt+F11", shareClip: "" }, sounds: true,
+    perGame: { Fortnite: { replaySeconds: 300 }, "Counter-Strike 2": { bitrateMbps: 80 } },
   };
   const recording = scene === "recording";
   const trouble = scene === "trouble";
@@ -48,6 +49,7 @@
     },
     hotkeyErrors: scene === "conflict" ? ["Alt+F10"] : [],
     folder: "C:\\Users\\me\\Videos\\Tape",
+    games: ["Call of Duty", "Counter-Strike 2", "Fortnite", "Grand Theft Auto V", "Lethal Company", "Minecraft"],
     clips: q.get("empty") ? [] : [
       clip("Counter-Strike 2", 12, 790e6), clip("Counter-Strike 2", 28, 760e6), clip("Fortnite", 95, 1.1e9),
       clip("Minecraft", 1400, 4.1e9, "recording"), clip("Desktop", 1600, 712e6), clip("Lethal Company", 2800, 803e6),

@@ -67,6 +67,10 @@ pub struct VideoContext {
     pub clock: Clock,
     pub stop: Arc<AtomicBool>,
     pub stats: Arc<VideoStats>,
+    /// The bitrate to encode at, in Mbps, which can change while the pipeline runs: the encoder
+    /// takes a new one without starting over, so the replay buffer carries on. 0 means the one in
+    /// the settings the pipeline started with.
+    pub bitrate_mbps: Arc<AtomicU32>,
 }
 
 #[derive(Default)]

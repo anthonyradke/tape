@@ -181,6 +181,12 @@ impl Tracker {
         }
     }
 
+    /// The last game seen in front however long ago, for settings that stay with a game while
+    /// the user is alt-tabbed out of it. None until one has been.
+    pub fn last(&self) -> Option<&str> {
+        self.last.as_ref().map(|(name, _)| name.as_str())
+    }
+
     /// The game in front within the last `age`, or `DESKTOP`.
     pub fn game(&self, age: Duration, now: Instant) -> String {
         match &self.last {

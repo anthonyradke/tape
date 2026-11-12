@@ -37,6 +37,8 @@ function renderSettings() {
     <p class="note">Held in memory, never written to disk until you save. Uses up to ${bytes(view.replayRam)} of RAM at this bitrate.</p>
   </div></section>`);
 
+  html.push(renderPerGame());
+
   html.push(`<section class="sec"><h3>Audio</h3><div class="card">
     ${row("Game audio", select("systemAudio", deviceOptions(p.outputs, s.systemAudio, "Off"), s.systemAudio))}
     <div class="level"><i id="l-system"></i></div>
@@ -99,6 +101,61 @@ function shortLengths() {
   if (!options.some(([v]) => v === s.shortClipSeconds)) options.push([s.shortClipSeconds, `${span(Math.min(s.shortClipSeconds, s.replaySeconds))}`]);
   return options;
 }
+
+const GAME_BITRATES = [10, 20, 30, 40, 50, 60, 80, 100, 120, 150];
+
+// Replay length and bitrate for single games, in place of the global ones while that game is the
+// last one in front. Games come from the clip folders, so any game tape has saved can be added.
+function renderPerGame() {
+  const s = view.settings;
+  const names = Object.keys(s.perGame).sort((a, b) => a.localeCompare(b));
+  const has = (game) => names.some((n) => n.toLowerCase() === game.toLowerCase());
+  const addable = view.games.filter((g) => !has(g));
+  const length = LENGTHS.find(([v]) => v === s.replaySeconds)?.[1] || clock(s.replaySeconds);
+  const choice = (name, field, options, value) =>
+    `<select data-game="${esc(name)}" data-game-key="${field}" aria-label="${esc(name)} ${field === "replaySeconds" ? "replay length" : "bitrate"}">${options
+      .map(([v, label]) => `<option value="${esc(v)}" ${String(v) === String(value ?? "") ? "selected" : ""}>${esc(label)}</option>`)
+      .join("")}</select>`;
+  const rows = names.map((name) => {
+    const g = s.perGame[name];
+    const rates = GAME_BITRATES.includes(g.bitrateMbps) || g.bitrateMbps == null ? GAME_BITRATES : [...GAME_BITRATES, g.bitrateMbps].sort((a, b) => a - b);
+    const lengths = LENGTHS.some(([v]) => v === g.replaySeconds) || g.replaySeconds == null ? LENGTHS : [...LENGTHS, [g.replaySeconds, clock(g.replaySeconds)]];
+    return row(
+      esc(name),
+      `${choice(name, "replaySeconds", [["", `Keep ${length}`], ...lengths], g.replaySeconds)}${choice(name, "bitrateMbps", [["", `Keep ${s.bitrateMbps} Mbps`], ...rates.map((b) => [b, `${b} Mbps`])], g.bitrateMbps)}<button class="btn sm ghost icon press" data-game-remove="${esc(name)}" title="Remove ${esc(name)}" aria-label="Remove ${esc(name)}"><svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>`,
+    );
+  });
+  const add = addable.length
+    ? row("Add a game", `<select data-game-add aria-label="Add a game"><option value="">Choose…</option>${addable.map((g) => `<option value="${esc(g)}">${esc(g)}</option>`).join("")}</select>`)
+    : "";
+  if (!rows.length && !add) return "";
+  return `<section class="sec"><h3>Per game</h3><div class="card">
+    ${rows.join("")}
+    ${add}
+    <p class="note">${rows.length ? "These replace the replay length and bitrate above while that game is the last one played, alt-tabbed out included." : "A game's own replay length and bitrate, used while it's the last one played. Games appear here once tape has saved a clip of them."} Bitrate changes wait for a recording to end.</p>
+  </div></section>`;
+}
+
+document.addEventListener("change", (e) => {
+  const { game, gameKey, gameAdd } = e.target.dataset;
+  if (gameAdd !== undefined) {
+    const name = e.target.value;
+    if (name) save((s) => (s.perGame[name] = {}));
+    return;
+  }
+  if (!game || !gameKey) return;
+  const value = e.target.value === "" ? null : Number(e.target.value);
+  save((s) => {
+    const entry = (s.perGame[game] ||= {});
+    if (value == null) delete entry[gameKey];
+    else entry[gameKey] = value;
+  });
+});
+
+document.addEventListener("click", (e) => {
+  const remove = e.target.closest("[data-game-remove]");
+  if (remove) save((s) => delete s.perGame[remove.dataset.gameRemove]);
+});
 
 function renderSharing() {
   const s = view.settings;

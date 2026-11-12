@@ -426,6 +426,42 @@ fn markers_during_a_recording_become_its_chapters() {
 }
 
 #[test]
+fn a_games_settings_apply_without_emptying_the_buffer() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let log = std::env::temp_dir().join(format!("tape-e2e-pergame-{}.log", std::process::id()));
+    let _ = fs::remove_file(&log);
+    let mut e = Engine::start("pergame", &[("TAPE_LOG", log.to_str().unwrap())]);
+    e.configure(json!({"replaySeconds": 30, "bitrateMbps": 50}));
+    e.wait_status(15, "4 s buffered", |s| s["replaySeconds"].as_f64().unwrap() >= 4.0);
+    // The fake's window is always "Test Game". Another game's settings change nothing.
+    e.configure(json!({"replaySeconds": 30, "bitrateMbps": 50, "perGame": {"Other": {"replaySeconds": 5}, "test game": {"replaySeconds": 60, "bitrateMbps": 20}}}));
+    let s = e.wait_status(5, "the game's length", |s| s["replayTarget"] == 60);
+    assert!(s["replaySeconds"].as_f64().unwrap() >= 4.0, "the buffer must survive: {s}");
+    assert_eq!(s["video"]["running"], true);
+    // A recording holds the bitrate back until it ends, as with any encoder change.
+    e.send(json!({"cmd": "startRecording"}));
+    e.wait_status(10, "recording", |s| s["recordingSeconds"].as_f64().unwrap() >= 1.0);
+    e.configure(json!({"replaySeconds": 30, "bitrateMbps": 50, "perGame": {"Test Game": {"bitrateMbps": 30}}}));
+    let s = e.wait_status(5, "back to the global length", |s| s["replayTarget"] == 30);
+    assert_eq!(s["recording"], true);
+    e.wait_status(10, "more recorded", |s| s["recordingSeconds"].as_f64().unwrap() >= 2.0);
+    let text = fs::read_to_string(&log).unwrap();
+    assert!(!text.contains("30 Mbps, same session"), "applied mid-recording:\n{text}");
+    e.send(json!({"cmd": "stopRecording"}));
+    e.wait(10, "saved", |ev| ev["evt"] == "saved");
+    let s = e.wait_status(5, "after", |s| s["recording"] == false);
+    assert!(s["replaySeconds"].as_f64().unwrap() >= 4.0, "{s}");
+    std::thread::sleep(Duration::from_millis(500));
+    let text = fs::read_to_string(&log).unwrap();
+    assert_eq!(text.matches("fake pipeline started").count(), 1, "the pipeline must not restart:\n{text}");
+    let changes: Vec<&str> = text.lines().filter(|l| l.contains("same session")).collect();
+    assert_eq!(changes.len(), 2, "{text}");
+    assert!(changes[0].contains("20 Mbps") && changes[1].contains("30 Mbps"), "{changes:?}");
+}
+
+#[test]
 fn toggling_replay_mid_recording_keeps_a_deferred_change() {
     if !have_ffmpeg() {
         return;

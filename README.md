@@ -22,26 +22,34 @@ OBS or ffmpeg underneath. It was written after the NVIDIA app's instant replay k
 
 ## Features
 
-- Instant replay held in RAM, from 30 seconds to 20 minutes. Nothing touches the disk until a clip is saved.
+- Instant replay held in RAM, from 30 seconds to 20 minutes, using at most 40% of the PC's memory. Nothing touches
+  the disk until a clip is saved.
+- A second key that saves a shorter clip, the last 30 seconds by default.
 - Clips saved in quick succession don't overlap: each starts where the last one ended.
 - Recording alongside replay, from one encoder session.
 - H.264, HEVC or AV1, chosen from what the GPU reports, with bitrate, frame rate and quality settings that apply as
   soon as they change.
 - Output at the monitor's resolution, scaled down, or upscaled to 1440p or 4K for sites that give higher
   resolutions a better bitrate.
-- Game audio from any output device and a microphone from any input device, mixed or on separate tracks.
+- Game audio from any output device and a microphone from any input device, mixed or on separate tracks. With the
+  Windows default device, tape's own sounds and clips played in it are left out of game audio.
+- Replay length and bitrate per game, applied while that game is in front without emptying the replay buffer.
 - A side panel over the game on Alt+Z with replay, recording, common settings and recent clips.
 - A gallery with thumbnails and a built-in player, filtered by game or by starred clips.
 - Trimming in the player without re-encoding. The cut is saved as a new file beside the original and starts on the
   keyframe at or before the chosen point, at most two seconds early with tape's own clips.
-- Starring, renaming and deleting from the player. Deleted clips go to the Recycle Bin.
-- Copy link: uploads a 1080p H.264 copy of a clip to a self-hosted Cloudflare Worker and copies a link that plays
+- Starring, renaming and deleting from the player, with keyboard shortcuts. Deleted clips go to the Recycle Bin.
+- Markers during a recording on a hotkey, saved as chapters that players show and the trim handles snap to.
+- Repair for recordings left unfinished by a crash or power cut, done in place.
+- Copy link: uploads a 1080p H.264 copy of a clip, or of the trim selection, with the mic mixed in, to a self-hosted Cloudflare Worker and copies a link that plays
   in a browser and embeds in chat apps, then expires after 7 days. Storage use against R2's free 10 GB is shown in
   the app. See [share/README.md](share/README.md).
 - Clips sorted into a folder per game under `Videos\Tape`, using NVIDIA's file names
   (`Fortnite 2026.10.08 - 22.14.44.26.DVR.mp4`, without `.DVR` for recordings).
-- Global hotkeys, defaulting to the ones ShadowPlay uses (Alt+F10, Alt+F9, Alt+Shift+F10, Alt+Z).
-- Automatic recovery when capture or the encoder crashes or hangs, with a tone if replay stays down.
+- Global hotkeys, defaulting to the ones ShadowPlay uses (Alt+F10, Alt+F9, Alt+Shift+F10, Alt+Z), plus Alt+F11 for
+  a short clip, Alt+F8 for a marker and an optional key that saves a clip and copies its link.
+- Automatic recovery when capture or the encoder crashes or hangs, with a tone if replay stays down, and a quiet
+  line in the window and the Alt+Z panel when frames were dropped or audio glitched in the last few minutes.
 - Signed updates from a button in the title bar or the tray.
 
 <p align="center">
@@ -86,15 +94,17 @@ bitstream.
 The app is two processes. The tray and window run in one, and capture and encoding in a child process
 watched by the first. If the engine crashes or stops responding inside a driver call, it is replaced
 within seconds and any recording resumes in a new file. A failure that lasts more than ten seconds, or
-repeated crashes, plays an alert tone, so replay can't turn off unnoticed. Failures that only return an
-error (capture lost to a UAC prompt, a GPU reset, an unplugged headset) are handled inside the engine
-without losing the replay buffer where possible.
+repeated crashes, plays an alert tone, so replay can't turn off unnoticed. A hang counts from when it is
+noticed, about 13 seconds in. Failures that only return an error (a GPU reset, an unplugged headset) are
+handled inside the engine without losing the replay buffer where possible. The lock screen, a UAC prompt
+or a monitor turning off pause capture without the tone.
 
 ### File format
 
 Recordings use a hybrid MP4 layout. The file is valid fragmented MP4 from the first seconds, so a crash
 or power cut costs at most the last two seconds. Finishing appends a normal `moov` and rewrites two box
-headers in place, with no copying. Clips are written with `moov` first so they start immediately when
+headers in one write after the index is synced to disk, with no copying, so the file plays at every step.
+A file left fragmented by a crash can be repaired from the player the same way. Clips are written with `moov` first so they start immediately when
 shared.
 
 ### Overlay
@@ -139,7 +149,7 @@ builds the app without one.
 | Engine behavior: clips, recording, restarts, hangs, device loss | `cargo test -p tape-engine`, a real process on a fake backend |
 | D3D11, both capture APIs, pointer shaders, AAC | `tape --self-test report.txt` on a Windows CI runner |
 | The shared-link copy: scaling, frame dropping, H.264 and AAC | `tape --share-copy` on a Windows CI runner, decoded by ffmpeg |
-| Playback, seeking and thumbnails in WebView2, trim, rename and delete on real files, overlay window | The real app on the fake engine on a Windows CI runner, driven by `app/ui/uitest.js` |
+| Playback, seeking and thumbnails in WebView2, the trim, rename and delete commands on real files, overlay window | The real app on the fake engine on a Windows CI runner, driven by `app/ui/uitest.js` |
 | NVENC, video processor, WASAPI | The self-test on a machine with an NVIDIA GPU, from Settings > Run self-test |
 
 `tape --self-test <file> [settings.json]` runs each stage of the pipeline and writes a plain text report, including
@@ -167,10 +177,11 @@ own process, because a process can only duplicate an output once and replay stay
   show it.
 - The game keeps the mouse and keyboard while the overlay is open. A game that locks the cursor has to be paused to
   its menu before the overlay's buttons can be clicked.
-- Sound cues play through the normal output, so they end up in clips, and so does audio from a clip played in the app.
+- With an output device chosen instead of Windows default, tape's sound cues and clips played in it end up in game
+  audio. Windows can only leave a process out of the default device's mix.
+- Markers are written when a recording finishes, so one cut short by a crash and repaired has none.
 - Games in a window outside a known store folder aren't recognized and go in `Desktop`.
-- Shared links carry the first audio track only, so with separate tracks they have game audio without the mic.
-  Sharing an HEVC clip needs the HEVC Video Extensions from the Microsoft Store.
+- Sharing an HEVC clip needs the HEVC Video Extensions from the Microsoft Store.
 - The built-in player needs Windows' codecs for HEVC and AV1. Clips that can't play there open in the default app.
 - The installer isn't code-signed.
 

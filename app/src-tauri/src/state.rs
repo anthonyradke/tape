@@ -114,6 +114,15 @@ impl Shared {
     }
 }
 
+/// The settings as the engine gets them: without the share server and its key, which it has no
+/// use for and which then can't end up anywhere it writes.
+pub fn for_engine(settings: &Settings) -> Command {
+    let mut settings = settings.clone();
+    settings.share_server.clear();
+    settings.share_key.clear();
+    Command::Configure { settings: Box::new(settings) }
+}
+
 /// Sends a command to the engine. While it's restarting there is nobody to tell, and the
 /// supervisor brings a new engine up to date with the current settings anyway.
 pub fn send(app: &AppHandle, command: &Command) {

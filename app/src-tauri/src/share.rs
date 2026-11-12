@@ -72,12 +72,32 @@ struct Server {
     key: String,
 }
 
+fn set_up(app: &AppHandle) -> bool {
+    let shared = app.state::<Shared>();
+    let settings = shared.settings.lock().unwrap();
+    !settings.share_server.is_empty() && !settings.share_key.is_empty()
+}
+
 fn server(app: &AppHandle) -> Result<Server, String> {
     let settings = app.state::<Shared>().settings.lock().unwrap().clone();
     if settings.share_server.is_empty() || settings.share_key.is_empty() {
         return Err("Sharing isn't set up yet. Add the share server and upload key in Settings.".into());
     }
+    if !private_address(&settings.share_server) {
+        return Err("The share server has to be an https:// address, so the upload key isn't sent in the open.".into());
+    }
     Ok(Server { url: settings.share_server, key: settings.share_key })
+}
+
+/// Every request carries the upload key, so plain HTTP is only for a server on this PC (testing
+/// the worker locally).
+fn private_address(url: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(url) else { return false };
+    match url.scheme() {
+        "https" => true,
+        "http" => matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]")),
+        _ => false,
+    }
 }
 
 fn client() -> &'static reqwest::Client {
@@ -317,7 +337,7 @@ pub fn share_jobs(app: AppHandle) -> Vec<Job> {
 /// The last numbers, or fresh ones. None while sharing isn't set up.
 #[tauri::command]
 pub async fn share_usage(app: AppHandle, fresh: bool) -> Result<Option<Usage>, String> {
-    if server(&app).is_err() {
+    if !set_up(&app) {
         return Ok(None);
     }
     let known = app.state::<Shares>().usage.lock().unwrap().clone();
@@ -381,4 +401,23 @@ fn copy_to_clipboard(text: &str) {
 fn copy_to_clipboard(text: &str) {
     // The Linux build is only for tests, which read the link from the job instead.
     let _ = text;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_key_only_goes_over_https_or_to_this_pc() {
+        assert!(private_address("https://share.example.com"));
+        assert!(private_address("HTTPS://share.example.com:8443/base"));
+        assert!(private_address("http://localhost:8787"));
+        assert!(private_address("http://127.0.0.1"));
+        assert!(private_address("http://[::1]:8787"));
+        assert!(!private_address("http://share.example.com"));
+        assert!(!private_address("http://localhost.example.com"));
+        assert!(!private_address("http://localhost@example.com"));
+        assert!(!private_address("ftp://share.example.com"));
+        assert!(!private_address("share.example.com"));
+    }
 }

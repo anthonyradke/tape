@@ -162,8 +162,8 @@ fn watch(app: &AppHandle, mut child: Child, alarm: &mut Alarm) -> String {
     });
 
     // Bring the new engine up to where the last one was.
-    let settings = shared.settings.lock().unwrap().clone();
-    state::send(app, &Command::Configure { settings: Box::new(settings) });
+    let configure = state::for_engine(&shared.settings.lock().unwrap());
+    state::send(app, &configure);
     state::send(app, &Command::Probe);
     if shared.recording_wanted.load(Ordering::Relaxed) {
         state::send(app, &Command::StartRecording);

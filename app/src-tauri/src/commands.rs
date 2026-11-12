@@ -244,7 +244,7 @@ pub fn save_settings(app: AppHandle, settings: Settings) -> View {
     };
     *shared.settings.lock().unwrap() = settings.clone();
     shared.persist();
-    state::send(&app, &Command::Configure { settings: Box::new(settings) });
+    state::send(&app, &state::for_engine(&settings));
     if keys_changed {
         hotkeys::register(&app);
     }

@@ -26,6 +26,8 @@ const HANG_LIMIT_MS: u64 = 8000;
 /// Longest a save waits for the sound of its last frames, which leaves the mixer at least 150 ms
 /// (up to 450 ms with the mic delay) after the picture.
 const CLIP_AUDIO_WAIT: Duration = Duration::from_millis(600);
+/// Share of physical RAM the replay buffer may use, however long and high-bitrate it is set.
+const REPLAY_RAM_SHARE: f64 = 0.4;
 /// A recording belongs to the game that was in front this recently.
 const RECENT_GAME: Duration = Duration::from_secs(15);
 
@@ -406,6 +408,18 @@ impl Engine {
     }
 }
 
+#[cfg(windows)]
+fn total_ram_bytes() -> Option<u64> {
+    crate::win::total_ram_bytes()
+}
+
+#[cfg(not(windows))]
+fn total_ram_bytes() -> Option<u64> {
+    let info = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let kb: u64 = info.lines().find_map(|l| l.strip_prefix("MemTotal:"))?.trim().trim_end_matches("kB").trim().parse().ok()?;
+    Some(kb * 1024)
+}
+
 /// Writes under a temporary name, so a half-written clip never appears as a playable file.
 fn write_file(path: &std::path::Path, clip: &tape_core::sink::Clip) -> Result<u64, String> {
     if let Some(dir) = path.parent() {
@@ -454,8 +468,14 @@ pub fn run(backend: Arc<dyn Backend>, input: impl BufRead + Send + 'static, mut 
 
     log!("engine started, version {}", env!("CARGO_PKG_VERSION"));
     let settings = Settings::default();
+    let sink = Sink::new(settings.replay, settings.replay_seconds);
+    if let Some(ram) = total_ram_bytes() {
+        let limit = (ram as f64 * REPLAY_RAM_SHARE) as u64;
+        log!("replay buffer limited to {} MB", limit / 1_000_000);
+        sink.set_memory_limit(Some(limit.min(usize::MAX as u64) as usize));
+    }
     let mut engine = Engine {
-        sink: Sink::new(settings.replay, settings.replay_seconds),
+        sink,
         backend,
         deferred: None,
         clock: Clock::new(),

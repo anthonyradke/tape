@@ -17,6 +17,9 @@ pub struct Ring {
     packets: VecDeque<(i64, Packet)>,
     bytes: usize,
     retain_us: i64,
+    /// Past this the oldest footage goes even inside the replay length, so a long buffer at a
+    /// high bitrate can't take all the RAM. None for no limit.
+    max_bytes: Option<usize>,
     newest_us: i64,
     newest_video_us: i64,
     /// How long one video frame lasts.
@@ -36,6 +39,11 @@ impl Ring {
 
     pub fn set_length(&mut self, seconds: u32) {
         self.retain_us = seconds as i64 * 1_000_000 + KEYFRAME_MARGIN_US;
+        self.evict();
+    }
+
+    pub fn set_max_bytes(&mut self, max: Option<usize>) {
+        self.max_bytes = max;
         self.evict();
     }
 
@@ -71,6 +79,16 @@ impl Ring {
         while self.packets.front().is_some_and(|(us, _)| *us < cutoff) {
             let (_, p) = self.packets.pop_front().unwrap();
             self.bytes -= p.data.len();
+        }
+        let Some(max) = self.max_bytes else { return };
+        while self.bytes > max {
+            // A whole GOP at a time, so what is left still starts on a keyframe. The newest GOP
+            // always stays.
+            let is_key = |(_, p): &(i64, Packet)| p.track == 0 && p.key;
+            let Some(next) = self.packets.iter().skip(1).position(is_key) else { break };
+            for (_, p) in self.packets.drain(..next + 1) {
+                self.bytes -= p.data.len();
+            }
         }
     }
 
@@ -416,6 +434,29 @@ mod tests {
         ring.clear();
         ring.push(Packet { track: 0, pts: 1, key: true, data: Arc::new(vec![]) }, &t);
         assert_eq!(ring.snapshot(10).len(), 1);
+    }
+
+    #[test]
+    fn a_byte_limit_evicts_whole_gops_from_the_front() {
+        let mut ring = Ring::new(60);
+        ring.set_max_bytes(Some(5_000));
+        fill(&mut ring, 30);
+        assert!(ring.bytes() <= 5_000, "{}", ring.bytes());
+        // GOPs are 2 s of 1100 bytes a second: 4 s fit, starting on a keyframe.
+        assert_eq!(ring.bytes(), 4_400);
+        let (_, first) = ring.packets.front().unwrap();
+        assert!(first.track == 0 && first.key, "the buffer must start on a keyframe");
+        assert_eq!(ring.snapshot(60)[0].pts, 260);
+        assert!((ring.seconds(60) - 3.9).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_byte_limit_below_one_gop_keeps_the_newest() {
+        let mut ring = Ring::new(60);
+        fill(&mut ring, 30);
+        ring.set_max_bytes(Some(10));
+        assert_eq!(ring.snapshot(60)[0].pts, 280);
+        assert_eq!(ring.bytes(), 2_200);
     }
 
     #[test]

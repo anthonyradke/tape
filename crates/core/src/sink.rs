@@ -94,6 +94,11 @@ impl Sink {
         }
     }
 
+    /// Most RAM the replay buffer may hold, whatever its length. None for no limit.
+    pub fn set_memory_limit(&self, bytes: Option<usize>) {
+        self.inner.lock().unwrap().ring.set_max_bytes(bytes);
+    }
+
     /// The audio tracks of everything from here on.
     pub fn set_audio(&self, audio: Vec<AudioFormat>) {
         let mut s = self.inner.lock().unwrap();

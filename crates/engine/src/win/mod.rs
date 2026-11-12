@@ -56,6 +56,14 @@ impl Windows {
     }
 }
 
+/// Physical RAM, for sizing the replay buffer's limit.
+pub fn total_ram_bytes() -> Option<u64> {
+    use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    let mut status = MEMORYSTATUSEX { dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32, ..Default::default() };
+    unsafe { GlobalMemoryStatusEx(&mut status) }.ok()?;
+    Some(status.ullTotalPhys).filter(|b| *b > 0)
+}
+
 fn title(window: HWND) -> Option<String> {
     let mut buffer = [0u16; 256];
     let len = unsafe { GetWindowTextW(window, &mut buffer) };

@@ -13,8 +13,10 @@ use crate::ring::Ring;
 pub struct Clip {
     pub tracks: Tracks,
     pub packets: Vec<Packet>,
-    /// Hand this to `Sink::clip_failed` if the clip couldn't be saved.
+    /// Where the clip before it ended, put back by `Sink::clip_failed` if this one isn't saved.
     pub previous_cut: Option<i64>,
+    /// Where this clip ends.
+    pub cut: i64,
 }
 
 #[derive(Default)]
@@ -227,21 +229,44 @@ impl Sink {
 
     /// Up to the newest `seconds`, starting where the last clip ended if that's more recent.
     pub fn clip(&self, seconds: u32) -> Option<Clip> {
+        let end = self.clip_end();
+        self.clip_until(seconds, end)
+    }
+
+    /// Fixes where a clip saved now ends: the newest frame. Clips start on keyframes, so this
+    /// asks for one right after it, for the next clip to pick up from.
+    pub fn clip_end(&self) -> i64 {
+        let end = self.inner.lock().unwrap().ring.newest_video_us();
+        self.want_keyframe.store(true, Ordering::Relaxed);
+        end
+    }
+
+    /// Whether the sound for a clip ending at `end` is all in. Until then the clip would end in
+    /// silence and the next would start without what was missing.
+    pub fn audio_caught_up(&self, end: i64) -> bool {
+        let s = self.inner.lock().unwrap();
+        let tracks = s.tracks.as_ref().map_or(0, |t| t.audio.len());
+        s.ring.audio_reached(end, tracks)
+    }
+
+    /// The clip of up to `seconds` ending at `end` (from `clip_end`), starting where the last
+    /// clip ended if that's more recent.
+    pub fn clip_until(&self, seconds: u32, end: i64) -> Option<Clip> {
         let mut s = self.inner.lock().unwrap();
-        let packets = s.ring.snapshot(seconds);
+        let packets = s.ring.snapshot_until(seconds, end);
         if packets.is_empty() {
             return None;
         }
         let tracks = s.tracks.clone()?;
-        let previous_cut = s.ring.cut();
-        // Clips start on keyframes, so the next one needs one right here to pick up from.
-        self.want_keyframe.store(true, Ordering::Relaxed);
-        Some(Clip { tracks, packets, previous_cut })
+        let previous_cut = s.ring.cut_to(end);
+        let cut = s.ring.cut_us().unwrap_or(end);
+        Some(Clip { tracks, packets, previous_cut, cut })
     }
 
-    /// Puts the footage of a clip that wasn't saved back in reach of the next one.
-    pub fn clip_failed(&self, previous_cut: Option<i64>) {
-        self.inner.lock().unwrap().ring.restore_cut(previous_cut);
+    /// Puts the footage of a clip that wasn't saved back in reach of the next one, unless a later
+    /// clip has been taken since.
+    pub fn clip_failed(&self, clip: &Clip) {
+        self.inner.lock().unwrap().ring.restore_cut(clip.previous_cut, clip.cut);
     }
 
     pub fn replay_seconds(&self) -> f64 {
@@ -354,7 +379,7 @@ mod tests {
         sink.video(&format(1), 0, true, vec![1]);
         let clip = sink.clip(10).unwrap();
         assert!(sink.clip(10).is_none());
-        sink.clip_failed(clip.previous_cut);
+        sink.clip_failed(&clip);
         assert_eq!(sink.clip(10).unwrap().packets.len(), 1);
     }
 
@@ -390,6 +415,66 @@ mod tests {
         sink.video(&format(1), 1, false, vec![0; 100]);
         assert_eq!(sink.frames(), 2);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn audio_format() -> Vec<AudioFormat> {
+        vec![AudioFormat { name: "a".into(), asc: vec![] }]
+    }
+
+    #[test]
+    fn a_clip_ends_where_the_save_was_asked_for() {
+        let sink = Sink::new(true, 10);
+        sink.set_audio(audio_format());
+        for pts in 0..30 {
+            sink.video(&format(1), pts, pts == 0, vec![1]);
+        }
+        // Audio trails the video by 150 ms, as it comes out of the mixer.
+        for n in 0..(2_750 * 48 / 1024) {
+            sink.audio(0, n * 1024, vec![2]);
+        }
+        let end = sink.clip_end();
+        assert!(sink.take_keyframe_request());
+        assert!(!sink.audio_caught_up(end));
+        // Capture goes on while the save waits for the sound.
+        for pts in 30..35 {
+            sink.video(&format(1), pts, pts == 30, vec![1]);
+        }
+        for n in (2_750 * 48 / 1024)..(3_200 * 48 / 1024) {
+            sink.audio(0, n * 1024, vec![2]);
+        }
+        assert!(sink.audio_caught_up(end));
+        let clip = sink.clip_until(10, end).unwrap();
+        let video: Vec<i64> = clip.packets.iter().filter(|p| p.track == 0).map(|p| p.pts).collect();
+        assert_eq!(video, (0..30).collect::<Vec<_>>());
+        let last_audio = clip.packets.iter().filter(|p| p.track == 1).last().unwrap();
+        assert!(last_audio.micros(48_000) < 3_000_000 && last_audio.micros(48_000) + 21_334 >= 3_000_000);
+    }
+
+    #[test]
+    fn with_no_audio_tracks_there_is_nothing_to_wait_for() {
+        let sink = Sink::new(true, 10);
+        sink.video(&format(1), 0, true, vec![1]);
+        assert!(sink.audio_caught_up(sink.clip_end()));
+    }
+
+    #[test]
+    fn an_older_save_failing_does_not_undo_a_newer_one() {
+        let sink = Sink::new(true, 60);
+        for pts in 0..30 {
+            sink.video(&format(1), pts, pts % 10 == 0, vec![1]);
+        }
+        let a = sink.clip(60).unwrap();
+        for pts in 30..60 {
+            sink.video(&format(1), pts, pts % 10 == 0, vec![1]);
+        }
+        let b = sink.clip(60).unwrap();
+        assert_eq!(b.packets[0].pts, 30);
+        sink.clip_failed(&a);
+        for pts in 60..90 {
+            sink.video(&format(1), pts, pts % 10 == 0, vec![1]);
+        }
+        let c = sink.clip(60).unwrap();
+        assert_eq!(c.packets[0].pts, 60, "the clip after B must not repeat it");
     }
 
     fn wait_finished(sink: &Sink) -> Vec<Finished> {

@@ -23,8 +23,9 @@ const STATUS_EVERY: Duration = Duration::from_millis(500);
 /// How long the video thread may go without a sign of life. Past this it is stuck inside a
 /// driver call. The engine stops reporting, and the host replaces the process.
 const HANG_LIMIT_MS: u64 = 8000;
-/// Audio that is still in flight when the save key is pressed.
-const CLIP_SETTLE: Duration = Duration::from_millis(250);
+/// Longest a save waits for the sound of its last frames, which leaves the mixer at least 150 ms
+/// (up to 450 ms with the mic delay) after the picture.
+const CLIP_AUDIO_WAIT: Duration = Duration::from_millis(600);
 /// A recording belongs to the game that was in front this recently.
 const RECENT_GAME: Duration = Duration::from_secs(15);
 
@@ -283,9 +284,14 @@ impl Engine {
         let (sink, events, seconds) = (self.sink.clone(), self.events.clone(), self.settings.replay_seconds);
         // Anything played in the last `seconds` is in the clip.
         let path = self.output_path(ClipKind::Replay, Duration::from_secs(seconds as u64));
+        // The clip ends at the newest frame now; the next one starts at the keyframe this asks for.
+        let end = sink.clip_end();
         thread::spawn(move || {
-            thread::sleep(CLIP_SETTLE);
-            let event = match sink.clip(seconds) {
+            let deadline = Instant::now() + CLIP_AUDIO_WAIT;
+            while !sink.audio_caught_up(end) && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            let event = match sink.clip_until(seconds, end) {
                 None if sink.replay_seconds() > 0.0 => Event::Error { message: "Nothing new since the last clip".into(), clip: true },
                 None => Event::Error { message: "Nothing has been buffered yet".into(), clip: true },
                 Some(clip) => match write_file(&path, &clip) {
@@ -295,7 +301,7 @@ impl Engine {
                     }
                     Err(e) => {
                         log!("clip failed: {e}");
-                        sink.clip_failed(clip.previous_cut);
+                        sink.clip_failed(&clip);
                         Event::Error { message: format!("Couldn't save the clip: {e}"), clip: true }
                     }
                 },

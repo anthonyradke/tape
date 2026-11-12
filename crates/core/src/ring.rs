@@ -19,7 +19,11 @@ pub struct Ring {
     retain_us: i64,
     newest_us: i64,
     newest_video_us: i64,
-    /// The last video frame in the previous clip. The next clip starts after it.
+    /// How long one video frame lasts.
+    frame_us: i64,
+    /// Start of the newest packet of each audio track, by track number less one.
+    newest_audio_us: Vec<i64>,
+    /// Where the previous clip ended. The next clip starts at the first keyframe after it.
     cut_us: Option<i64>,
 }
 
@@ -40,6 +44,7 @@ impl Ring {
         self.bytes = 0;
         self.newest_us = 0;
         self.newest_video_us = 0;
+        self.newest_audio_us.clear();
         self.cut_us = None;
     }
 
@@ -48,6 +53,13 @@ impl Ring {
         self.newest_us = self.newest_us.max(us);
         if packet.track == 0 {
             self.newest_video_us = us;
+            self.frame_us = 1_000_000 / tracks.video.fps.max(1) as i64;
+        } else {
+            let i = packet.track as usize - 1;
+            if self.newest_audio_us.len() <= i {
+                self.newest_audio_us.resize(i + 1, i64::MIN);
+            }
+            self.newest_audio_us[i] = self.newest_audio_us[i].max(us);
         }
         self.bytes += packet.data.len();
         self.packets.push_back((us, packet));
@@ -78,15 +90,30 @@ impl Ring {
 
     /// Seconds a clip saved right now would hold, leaving out what the last clip already has.
     pub fn clip_seconds(&self, window: u32) -> f64 {
-        let Some(start) = self.clip_start(window) else { return 0.0 };
+        let Some(start) = self.clip_start(window, self.newest_us) else { return 0.0 };
         ((self.newest_us - start) as f64 / 1e6).min(window as f64)
     }
 
+    /// The newest video frame, the last one in a clip saved now.
+    pub fn newest_video_us(&self) -> i64 {
+        self.newest_video_us
+    }
+
+    /// Whether every audio track has caught up with a clip whose last frame is at `end_us`.
+    /// Audio comes out of the mixer at least 150 ms behind the video.
+    pub fn audio_reached(&self, end_us: i64, tracks: usize) -> bool {
+        let sound_end = end_us + self.frame_us;
+        (0..tracks).all(|i| self.newest_audio_us.get(i).is_some_and(|us| *us >= sound_end))
+    }
+
     /// The keyframe at or before the window, or the first one after the last clip if that's later.
-    fn clip_start(&self, seconds: u32) -> Option<i64> {
-        let target = self.newest_us - seconds as i64 * 1_000_000;
+    fn clip_start(&self, seconds: u32, end_us: i64) -> Option<i64> {
+        let target = end_us - seconds as i64 * 1_000_000;
         let mut start = None;
         for (us, p) in &self.packets {
+            if *us > end_us {
+                break;
+            }
             if p.track == 0 && p.key && self.cut_us.is_none_or(|cut| *us > cut) {
                 if *us <= target || start.is_none() {
                     start = Some(*us);
@@ -95,22 +122,52 @@ impl Ring {
                 }
             }
         }
-        start.filter(|us| self.cut_us.is_none() || self.newest_us - us >= MIN_FOLLOW_UP_US)
+        start.filter(|us| self.cut_us.is_none() || end_us - us >= MIN_FOLLOW_UP_US)
     }
 
     /// The newest `seconds` of everything that isn't already in a clip, starting on a keyframe.
     pub fn snapshot(&self, seconds: u32) -> Vec<Packet> {
-        let Some(start) = self.clip_start(seconds) else { return Vec::new() };
-        self.packets.iter().filter(|(us, _)| *us >= start).map(|(_, p)| p.clone()).collect()
+        self.snapshot_until(seconds, self.newest_us)
+    }
+
+    /// `snapshot` of the `seconds` up to the frame at `end_us`. Its sound runs on to where that
+    /// frame ends, which is where the next clip's first frame (the keyframe asked for on saving)
+    /// and sound begin, so back-to-back clips join without a gap.
+    pub fn snapshot_until(&self, seconds: u32, end_us: i64) -> Vec<Packet> {
+        let Some(start) = self.clip_start(seconds, end_us) else { return Vec::new() };
+        let sound_end = end_us + self.frame_us;
+        self.packets
+            .iter()
+            .filter(|(us, p)| *us >= start && if p.track == 0 { *us <= end_us } else { *us < sound_end })
+            .map(|(_, p)| p.clone())
+            .collect()
     }
 
     /// Everything so far counts as clipped. Returns the old cut, for `restore_cut`.
     pub fn cut(&mut self) -> Option<i64> {
-        self.cut_us.replace(self.newest_video_us)
+        self.cut_to(self.newest_video_us)
     }
 
-    pub fn restore_cut(&mut self, cut: Option<i64>) {
-        self.cut_us = cut;
+    /// Everything up to `end_us` counts as clipped. Never moves the cut back, which an earlier
+    /// save finishing after a later one would otherwise do. Returns the old cut.
+    pub fn cut_to(&mut self, end_us: i64) -> Option<i64> {
+        let old = self.cut_us;
+        self.cut_us = Some(old.map_or(end_us, |cut| cut.max(end_us)));
+        old
+    }
+
+    /// Puts back the cut from before a clip that wasn't saved, as long as no other clip has moved
+    /// it since: saves run on threads of their own, and undoing a later clip's cut would make the
+    /// next clip repeat that one.
+    pub fn restore_cut(&mut self, previous: Option<i64>, ours: i64) {
+        if self.cut_us == Some(ours) {
+            self.cut_us = previous;
+        }
+    }
+
+    /// Where the last clip ended.
+    pub fn cut_us(&self) -> Option<i64> {
+        self.cut_us
     }
 }
 
@@ -250,8 +307,104 @@ mod tests {
         fill(&mut ring, 30);
         let before = ring.snapshot(10).len();
         let old = ring.cut();
-        ring.restore_cut(old);
+        ring.restore_cut(old, ring.cut_us().unwrap());
         assert_eq!(ring.snapshot(10).len(), before);
+    }
+
+    #[test]
+    fn a_failed_clip_leaves_a_later_clips_cut_alone() {
+        let t = tracks();
+        let mut ring = Ring::new(60);
+        fill(&mut ring, 10);
+        // Clip A ends at 9.9 s and its save is slow.
+        let a_previous = ring.cut_to(9_900_000);
+        for frame in 100..200 {
+            ring.push(Packet { track: 0, pts: frame, key: frame % 20 == 0, data: Arc::new(vec![]) }, &t);
+        }
+        // Clip B ends at 19.9 s and is saved, then A fails.
+        ring.cut_to(19_900_000);
+        ring.restore_cut(a_previous, 9_900_000);
+        assert_eq!(ring.cut_us(), Some(19_900_000), "the next clip must not repeat B");
+        // B failing too puts its own cut back.
+        ring.restore_cut(Some(9_900_000), 19_900_000);
+        assert_eq!(ring.cut_us(), Some(9_900_000));
+    }
+
+    #[test]
+    fn an_earlier_end_never_moves_the_cut_back() {
+        let mut ring = Ring::new(60);
+        fill(&mut ring, 10);
+        ring.cut_to(9_000_000);
+        assert_eq!(ring.cut_to(5_000_000), Some(9_000_000));
+        assert_eq!(ring.cut_us(), Some(9_000_000));
+    }
+
+    /// Video to frame 299 (29.9 s); audio only to 29.75 s, as the mixer delivers it.
+    fn fill_with_late_audio(ring: &mut Ring) {
+        let t = tracks();
+        for frame in 0..300 {
+            ring.push(Packet { track: 0, pts: frame, key: frame % 20 == 0, data: Arc::new(vec![0; 100]) }, &t);
+        }
+        for n in 0..(29_750 * AUDIO_RATE as i64 / 1000) / 1024 {
+            ring.push(Packet { track: 1, pts: n * 1024, key: true, data: Arc::new(vec![0; 10]) }, &t);
+        }
+    }
+
+    fn push_audio_until(ring: &mut Ring, until_us: i64) {
+        let t = tracks();
+        let first = ring.newest_audio_us[0] * AUDIO_RATE as i64 / 1_000_000 / 1024 + 1;
+        for n in first.. {
+            let p = Packet { track: 1, pts: n * 1024, key: true, data: Arc::new(vec![0; 10]) };
+            let us = p.micros(AUDIO_RATE);
+            ring.push(p, &t);
+            if us >= until_us {
+                break;
+            }
+        }
+    }
+
+    #[test]
+    fn a_clip_waits_for_audio_to_reach_its_end() {
+        let mut ring = Ring::new(10);
+        fill_with_late_audio(&mut ring);
+        let end = ring.newest_video_us();
+        assert_eq!(end, 29_900_000);
+        assert!(!ring.audio_reached(end, 1));
+        assert!(ring.audio_reached(end, 0), "no audio tracks, nothing to wait for");
+        // The last frame lasts 100 ms, and its sound with it.
+        push_audio_until(&mut ring, end + 90_000);
+        assert!(!ring.audio_reached(end, 1));
+        push_audio_until(&mut ring, end + 100_000);
+        assert!(ring.audio_reached(end, 1));
+    }
+
+    #[test]
+    fn back_to_back_clips_keep_the_audio_at_the_join() {
+        let t = tracks();
+        let mut ring = Ring::new(60);
+        fill_with_late_audio(&mut ring);
+        let end = ring.newest_video_us();
+        // Frames after the save, starting with the keyframe it asks for, arrive while it waits.
+        for frame in 300..305 {
+            ring.push(Packet { track: 0, pts: frame, key: frame == 300, data: Arc::new(vec![0; 100]) }, &t);
+        }
+        push_audio_until(&mut ring, end + 100_000);
+        assert!(ring.audio_reached(end, 1));
+        let first = ring.snapshot_until(60, end);
+        ring.cut_to(end);
+        assert_eq!(first.iter().filter(|p| p.track == 0).last().unwrap().pts, 299, "no frame after the end");
+
+        for frame in 305..330 {
+            ring.push(Packet { track: 0, pts: frame, key: false, data: Arc::new(vec![0; 100]) }, &t);
+        }
+        push_audio_until(&mut ring, 33_000_000);
+        let second = ring.snapshot_until(60, ring.newest_video_us());
+        assert_eq!(second[0].pts, 300, "the next clip starts on the keyframe after the end");
+        // The sound of the two clips is one unbroken run of packets, ending and starting at 30 s.
+        let last = first.iter().filter(|p| p.track == 1).last().unwrap();
+        let next = second.iter().find(|p| p.track == 1).unwrap();
+        assert_eq!(next.pts, last.pts + 1024);
+        assert!(last.micros(AUDIO_RATE) < 30_000_000 && next.micros(AUDIO_RATE) >= 30_000_000);
     }
 
     #[test]

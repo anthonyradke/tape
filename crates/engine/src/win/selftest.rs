@@ -133,8 +133,32 @@ fn check_overlay(out: &mut String, output: &OutputInfo) {
     }
 }
 
-/// `label` names the line in the report and the file it leaves behind.
-fn check_encode(out: &mut String, settings: &Settings, codec: Codec, label: &str) {
+/// Where this run's clips go. The process id keeps two runs at once from writing, or sharing, each
+/// other's files.
+fn clip_path(name: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("tape-selftest-{}-{name}.mp4", std::process::id()))
+}
+
+/// Clips left by earlier runs, once they're a day old: recent ones may still be looked at.
+fn remove_old_clips() {
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !(name.starts_with("tape-selftest-") && name.ends_with(".mp4")) {
+            continue;
+        }
+        let old = entry.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > Duration::from_secs(86_400));
+        if old {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// `label` names the line in the report and the file it leaves behind, which is returned when
+/// the check wrote one, for the sharing check.
+fn check_encode(out: &mut String, settings: &Settings, codec: Codec, label: &str) -> Option<(String, std::path::PathBuf)> {
+    let file = clip_path(label);
+    let _ = std::fs::remove_file(&file);
     let settings = Settings { codec, replay: true, replay_seconds: 30, ..settings.clone() };
     let sink = Sink::new(true, 30);
     sink.set_audio(mix::tracks(&settings));
@@ -165,7 +189,7 @@ fn check_encode(out: &mut String, settings: &Settings, codec: Codec, label: &str
     let name = label;
     if let Err(e) = result {
         line!(out, "  {name}: FAILED, {e}");
-        return;
+        return None;
     }
     if let Err(e) = audio {
         line!(out, "  {name}: audio FAILED, {e}");
@@ -174,7 +198,6 @@ fn check_encode(out: &mut String, settings: &Settings, codec: Codec, label: &str
     let ms = stats.encode_us.load(Ordering::Relaxed) as f32 / 1000.0;
     let method = stats.method.lock().unwrap().clone();
     let clip = sink.clip(30);
-    let file = std::env::temp_dir().join(format!("tape-selftest-{name}.mp4"));
     let written = clip.as_ref().map(|c| {
         std::fs::File::create(&file).and_then(|f| write_clip(std::io::BufWriter::new(f), &c.tracks, &c.packets))
     });
@@ -182,12 +205,16 @@ fn check_encode(out: &mut String, settings: &Settings, codec: Codec, label: &str
         Some(Ok(bytes)) => {
             let (width, height) = (stats.width.load(Ordering::Relaxed), stats.height.load(Ordering::Relaxed));
             line!(out, "  {name}: OK, {width}x{height}, {encoded} frames, {dropped} dropped, last frame {ms:.1} ms, {method}, wrote {bytes} bytes to {}", file.display());
+            Some((name.to_string(), file))
         }
         Some(Err(e)) => {
             line!(out, "  {name}: FAILED writing the file, {e}");
+            let _ = std::fs::remove_file(&file);
+            None
         }
         None => {
             line!(out, "  {name}: FAILED, encoder produced nothing usable ({encoded} frames)");
+            None
         }
     }
 }
@@ -296,19 +323,18 @@ fn check_aac(out: &mut String, backend: &Windows) {
     }
 }
 
-/// Makes the shared-link copy of the clips the encode checks wrote: the 4K one shows scaling, the
-/// HEVC and AV1 ones whether Windows can decode those formats.
-fn check_share(out: &mut String) {
-    let mut any = false;
-    for name in ["H.264-4K", "H.264", "HEVC", "AV1"] {
-        let input = std::env::temp_dir().join(format!("tape-selftest-{name}.mp4"));
-        if !input.exists() {
-            continue;
-        }
-        any = true;
-        let output = std::env::temp_dir().join(format!("tape-selftest-share-{name}.mp4"));
+/// Makes the shared-link copy of the clips the encode checks wrote in this run: the 4K one shows
+/// scaling, the HEVC and AV1 ones whether Windows can decode those formats.
+fn check_share(out: &mut String, clips: &[(String, std::path::PathBuf)]) {
+    // 4K first: it shows the scaling.
+    let order = |name: &str| ["H.264-4K", "H.264", "HEVC", "AV1"].iter().position(|n| *n == name).unwrap_or(usize::MAX);
+    let mut clips: Vec<_> = clips.iter().collect();
+    clips.sort_by_key(|(name, _)| order(name));
+    let any = !clips.is_empty();
+    for (name, input) in clips {
+        let output = clip_path(&format!("share-{name}"));
         let began = Instant::now();
-        match super::share::share_copy(&input, &output, &mut |_| {}) {
+        match super::share::share_copy(input, &output, &mut |_| {}) {
             Ok(c) => {
                 let bytes = std::fs::metadata(&output).map(|m| m.len()).unwrap_or(0);
                 line!(out, "  from {name}: OK, {}x{}, {:.1} s of video in {:.1} s by {}, {bytes} bytes", c.width, c.height, c.seconds, began.elapsed().as_secs_f32(), c.path);
@@ -350,6 +376,7 @@ pub fn report(backend: &Windows, settings: &Settings) -> String {
     }
 
     line!(out, "\nEncode");
+    let mut clips = Vec::new();
     let nvidia = outputs.iter().find(|o| o.is_nvidia());
     match nvidia.map(encoder::supported) {
         None => {
@@ -361,19 +388,20 @@ pub fn report(backend: &Windows, settings: &Settings) -> String {
         Some(Ok(limits)) => {
             let names: Vec<_> = limits.iter().map(|l| format!("{} (up to {}x{})", codec_name(l.codec), l.max_width, l.max_height)).collect();
             line!(out, "  this GPU encodes {}", names.join(", "));
+            remove_old_clips();
             let codecs: Vec<_> = limits.iter().map(|l| l.codec).collect();
             let settings = Settings { capture: CaptureMethod::Auto, ..settings.clone() };
             for codec in codecs {
-                check_encode(&mut out, &settings, codec, codec_name(codec));
+                clips.extend(check_encode(&mut out, &settings, codec, codec_name(codec)));
             }
             // The largest size on offer, whatever this monitor is. Upscaling goes through the same
             // scaler but asks more of it and of the encoder's limits.
-            check_encode(&mut out, &Settings { resolution: 2160, ..settings.clone() }, Codec::H264, "H.264-4K");
+            clips.extend(check_encode(&mut out, &Settings { resolution: 2160, ..settings.clone() }, Codec::H264, "H.264-4K"));
         }
     }
 
     line!(out, "\nSharing");
-    check_share(&mut out);
+    check_share(&mut out, &clips);
 
     line!(out, "\nAudio");
     check_audio(&mut out, "Output loopback", Source::System);

@@ -1,7 +1,7 @@
 //! Writes one recording on its own thread, so a slow disk can never stall capture.
 
 use std::fs::File;
-use std::io::BufWriter;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
@@ -70,7 +70,10 @@ impl Recorder {
                 // Read after finishing: the last fragment is only written then, and a recording
                 // shorter than a fragment has nothing on disk before it.
                 let written = writer.bytes();
-                match writer.finish() {
+                match writer.finish_with(|out| {
+                    out.flush()?;
+                    out.get_ref().sync_data()
+                }) {
                     Ok((_, size)) => Finished { path: p, bytes: size, error },
                     Err(e) => {
                         let error = Some(format!("couldn't finish {}: {e}", p.display()));

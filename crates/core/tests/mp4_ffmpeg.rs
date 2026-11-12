@@ -275,6 +275,34 @@ fn file_left_by_a_crash_still_plays() {
 }
 
 #[test]
+fn every_step_of_finishing_still_plays() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let (tracks, packets) = stream(Codec::H264, 1, 0);
+    let mut w = Mp4Writer::new(std::io::Cursor::new(Vec::new()), &tracks).unwrap();
+    for p in &packets {
+        w.push(p, tracks.timescale(p.track)).unwrap();
+    }
+    // What the disk holds at each point finishing makes sure of.
+    let mut states = Vec::new();
+    w.finish_with(|out| {
+        states.push(out.get_ref().clone());
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(states.len(), 2);
+    for (n, data) in states.iter().enumerate() {
+        let path = tmp(&format!("finishing-{n}.mp4"));
+        fs::write(&path, data).unwrap();
+        let frames = frames_of(&probe(&path), "video")[0];
+        assert_eq!(frames, FRAMES as u64, "step {n}: {frames} frames");
+    }
+    let finished = tmp("finishing-1.mp4");
+    assert_eq!(top_level_boxes(&finished), ["ftyp", "free", "mdat", "moov"]);
+}
+
+#[test]
 fn audio_starting_late_stays_in_sync() {
     if !have_ffmpeg() {
         return;

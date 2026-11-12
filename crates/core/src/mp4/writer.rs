@@ -46,6 +46,8 @@ pub struct Mp4Writer<W: Write + Seek> {
     origin_us: Option<i64>,
     pos: u64,
     init_moov_at: u64,
+    /// The fragmented header's moov after its type, rewritten unchanged when finishing.
+    init_moov_body: Vec<u8>,
     mdat_header_at: u64,
     sequence: u32,
     fragment_video_ticks: i64,
@@ -68,6 +70,7 @@ impl<W: Write + Seek> Mp4Writer<W> {
         out.flush()?;
         let default_gap = |t: &Table| if matches!(t.kind, Kind::Video { .. }) { 1 } else { crate::packet::AAC_FRAME as u32 };
         Ok(Mp4Writer {
+            init_moov_body: head[init_moov_at as usize + 8..mdat_header_at as usize].to_vec(),
             pos: head.len() as u64,
             video_ticks_per_fragment: FRAGMENT_SECONDS * tracks.video.fps as i64,
             tracks: tables
@@ -223,7 +226,13 @@ impl<W: Write + Seek> Mp4Writer<W> {
     /// Writes the final index. Leaves an ordinary MP4: the fragments become opaque bytes inside
     /// one large `mdat` and the normal `moov` at the end points straight at the samples. Returns
     /// the file's final size, which includes the last fragment written here.
-    pub fn finish(mut self) -> io::Result<(W, u64)> {
+    pub fn finish(self) -> io::Result<(W, u64)> {
+        self.finish_with(|_| Ok(()))
+    }
+
+    /// `finish`, calling `sync` to get everything written so far onto the disk before the header
+    /// changes that switch to the final index, and again after them.
+    pub fn finish_with(mut self, mut sync: impl FnMut(&mut W) -> io::Result<()>) -> io::Result<(W, u64)> {
         self.check()?;
         for t in &mut self.tracks {
             if let Some((_, key, data)) = t.held.take() {
@@ -236,19 +245,26 @@ impl<W: Write + Seek> Mp4Writer<W> {
         let mut index = Vec::new();
         moov(&mut index, &tables, false);
         self.out.write_all(&index)?;
-        let size = self.pos + index.len() as u64;
-
-        let mdat_size = self.pos - self.mdat_header_at;
-        self.out.seek(SeekFrom::Start(self.mdat_header_at))?;
-        let mut header = Vec::with_capacity(16);
-        header.u32(1);
-        header.extend_from_slice(b"mdat");
-        header.u64(mdat_size);
-        self.out.write_all(&header)?;
-        // Turn the fragmented header into padding last, so the file is playable at every step.
-        self.out.seek(SeekFrom::Start(self.init_moov_at + 4))?;
-        self.out.write_all(b"free")?;
         self.out.flush()?;
+        let size = self.pos + index.len() as u64;
+        // Until here the file is the fragmented one with an unused box at the end. The index has to
+        // be on the disk before the headers point at it, or a power cut could keep only the edit.
+        sync(&mut self.out)?;
+
+        // Both edits in one write, since they sit next to each other: the fragmented moov becomes
+        // padding and the padding after it becomes the header of one mdat over all fragments.
+        // Either one alone leaves a file with no playable frames.
+        let mdat_size = self.pos - self.mdat_header_at;
+        let mut edit = Vec::with_capacity(self.init_moov_body.len() + 20);
+        edit.extend_from_slice(b"free");
+        edit.extend_from_slice(&self.init_moov_body);
+        edit.u32(1);
+        edit.extend_from_slice(b"mdat");
+        edit.u64(mdat_size);
+        self.out.seek(SeekFrom::Start(self.init_moov_at + 4))?;
+        self.out.write_all(&edit)?;
+        self.out.flush()?;
+        sync(&mut self.out)?;
         Ok((self.out, size))
     }
 }

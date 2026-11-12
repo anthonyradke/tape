@@ -335,14 +335,22 @@ function accelerator(e) {
   return [...parts, key].join("+");
 }
 
+// Ends a key capture that was left without a key: the window lost focus or is going away. The
+// keys are all off while one runs, so this can't wait for a keypress that may never come.
+let abandonCapture = null;
+
 async function listenForKey(button, name) {
   if (listening) return;
   listening = name;
   button.classList.add("listening");
   button.textContent = "Press keys. Esc cancels, Backspace clears.";
   await invoke("pause_hotkeys");
+  let ended = false;
   const done = async (value) => {
+    if (ended) return;
+    ended = true;
     document.removeEventListener("keydown", onKey, true);
+    abandonCapture = null;
     listening = null;
     await invoke("resume_hotkeys");
     if (value === undefined) await refresh();
@@ -357,6 +365,14 @@ async function listenForKey(button, name) {
     if (combo) done(combo);
   };
   document.addEventListener("keydown", onKey, true);
+  abandonCapture = () => done();
+}
+
+for (const [target, type] of [[window, "blur"], [window, "pagehide"], [window, "beforeunload"], [document, "visibilitychange"]]) {
+  target.addEventListener(type, () => {
+    if (type === "visibilitychange" && !document.hidden) return;
+    abandonCapture?.();
+  });
 }
 
 // Hotkey capture listens first and stops the event, so this only sees a free Esc.

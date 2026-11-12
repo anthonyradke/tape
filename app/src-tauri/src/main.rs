@@ -13,7 +13,7 @@ mod update;
 
 use std::path::Path;
 
-use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
 const HIDDEN_ARG: &str = "--minimized";
@@ -90,6 +90,14 @@ fn main() {
                 show_window(handle);
             }
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            // A key capture left running when the window went away would keep every hotkey off.
+            if window.label() == "main" && matches!(event, WindowEvent::Focused(false) | WindowEvent::Destroyed) {
+                // Off this callback: registering goes through the main thread's event handling.
+                let app = window.app_handle().clone();
+                std::thread::spawn(move || hotkeys::resume_if_paused(&app));
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::view,

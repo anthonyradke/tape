@@ -1,6 +1,8 @@
 //! Global keys. These work through RegisterHotKey, which fires while a fullscreen game has focus.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use tape_core::settings::Hotkeys;
 use tauri::plugin::TauriPlugin;
@@ -20,6 +22,11 @@ enum Action {
 }
 
 static BINDINGS: Mutex<Vec<(u32, Action)>> = Mutex::new(Vec::new());
+/// Which pause is running, 0 for none. Counted so a timer left from an earlier pause can't end a later one.
+static PAUSED: AtomicU64 = AtomicU64::new(0);
+static PAUSES: AtomicU64 = AtomicU64::new(0);
+/// A key capture nobody finished (the window closed or a game took focus) gives the keys back after this.
+const PAUSE_LIMIT: Duration = Duration::from_secs(30);
 
 pub fn plugin() -> TauriPlugin<Wry> {
     tauri_plugin_global_shortcut::Builder::new()
@@ -45,6 +52,7 @@ pub fn plugin() -> TauriPlugin<Wry> {
 /// Re-registers everything from the settings. A key that's taken (the NVIDIA overlay still
 /// holding Alt+F10, say) goes in the errors list for the UI rather than failing silently.
 pub fn register(app: &AppHandle) {
+    PAUSED.store(0, Ordering::Relaxed);
     let shared = app.state::<Shared>();
     let keys: Hotkeys = shared.settings.lock().unwrap().hotkeys.clone();
     let manager = app.global_shortcut();
@@ -92,7 +100,23 @@ pub fn grab_escape(app: &AppHandle, on: bool) {
     }
 }
 
-/// While the UI listens for a new key, none of them fire.
+/// While the UI listens for a new key, none of them fire. The UI ends the pause, and in case it
+/// never does, so do the main window losing focus or closing (`resume_if_paused`) and a timer.
 pub fn pause(app: &AppHandle) {
+    let pause = PAUSES.fetch_add(1, Ordering::Relaxed) + 1;
+    PAUSED.store(pause, Ordering::Relaxed);
     let _ = app.global_shortcut().unregister_all();
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(PAUSE_LIMIT);
+        if PAUSED.load(Ordering::Relaxed) == pause {
+            register(&app);
+        }
+    });
+}
+
+pub fn resume_if_paused(app: &AppHandle) {
+    if PAUSED.load(Ordering::Relaxed) != 0 {
+        register(app);
+    }
 }

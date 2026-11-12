@@ -96,6 +96,25 @@ fn to_movie(ticks: u64, timescale: u32) -> u64 {
     ticks * MOVIE_TIMESCALE as u64 / timescale as u64
 }
 
+/// Version 1 (64-bit times) is only for durations past 32 bits, 24.8 hours of 48 kHz audio, so
+/// every ordinary file keeps the version 0 boxes all players read.
+fn wide(duration: u64) -> bool {
+    duration > u32::MAX as u64
+}
+
+/// Creation and modification time, left at zero, in the box's width.
+fn times(o: &mut Vec<u8>, wide: bool) {
+    o.zeros(if wide { 16 } else { 8 });
+}
+
+fn duration(o: &mut Vec<u8>, wide: bool, value: u64) {
+    if wide {
+        o.u64(value);
+    } else {
+        o.u32(value as u32);
+    }
+}
+
 const MATRIX: [u32; 9] = [0x0001_0000, 0, 0, 0, 0x0001_0000, 0, 0, 0, 0x4000_0000];
 
 pub fn ftyp(out: &mut Vec<u8>, codec: Codec) {
@@ -119,11 +138,11 @@ pub fn moov(out: &mut Vec<u8>, tracks: &[Table], fragmented: bool) {
             .map(|t| to_movie(t.start as u64 + t.ticks(), t.timescale))
             .max()
             .unwrap_or(0);
-        full(o, b"mvhd", 0, 0, |o| {
-            o.u32(0);
-            o.u32(0);
+        let long = wide(duration);
+        full(o, b"mvhd", long as u8, 0, |o| {
+            times(o, long);
             o.u32(MOVIE_TIMESCALE);
-            o.u32(duration.min(u32::MAX as u64) as u32);
+            self::duration(o, long, duration);
             o.u32(0x0001_0000); // rate
             o.u16(0x0100); // volume
             o.zeros(10);
@@ -154,12 +173,12 @@ fn trak(o: &mut Vec<u8>, t: &Table, id: u32) {
     bx(o, b"trak", |o| {
         let ticks = t.ticks();
         let total = to_movie(t.start as u64 + ticks, t.timescale);
-        full(o, b"tkhd", 0, 3, |o| {
-            o.u32(0);
-            o.u32(0);
+        let long = wide(total);
+        full(o, b"tkhd", long as u8, 3, |o| {
+            times(o, long);
             o.u32(id);
             o.u32(0);
-            o.u32(total.min(u32::MAX as u64) as u32);
+            duration(o, long, total);
             o.zeros(8);
             o.u16(0); // layer
             o.u16(if t.is_video() { 0 } else { 1 }); // audio tracks are alternatives
@@ -176,26 +195,29 @@ fn trak(o: &mut Vec<u8>, t: &Table, id: u32) {
                 Kind::Audio { .. } => o.zeros(8),
             }
         });
-        if to_movie(t.start as u64, t.timescale) > 0 && ticks > 0 {
+        let empty = to_movie(t.start as u64, t.timescale);
+        if empty > 0 && ticks > 0 {
+            let played = to_movie(ticks, t.timescale);
+            let long = wide(empty) || wide(played);
             bx(o, b"edts", |o| {
-                full(o, b"elst", 0, 0, |o| {
+                full(o, b"elst", long as u8, 0, |o| {
                     o.u32(2);
-                    // Empty edit: the track is silent until its first sample.
-                    o.u32(to_movie(t.start as u64, t.timescale) as u32);
-                    o.u32(u32::MAX);
+                    // Empty edit: the track is silent until its first sample. Media time -1.
+                    duration(o, long, empty);
+                    duration(o, long, if long { u64::MAX } else { u32::MAX as u64 });
                     o.u32(0x0001_0000);
-                    o.u32(to_movie(ticks, t.timescale).min(u32::MAX as u64) as u32);
-                    o.u32(0);
+                    duration(o, long, played);
+                    duration(o, long, 0);
                     o.u32(0x0001_0000);
                 });
             });
         }
         bx(o, b"mdia", |o| {
-            full(o, b"mdhd", 0, 0, |o| {
-                o.u32(0);
-                o.u32(0);
+            let long = wide(ticks);
+            full(o, b"mdhd", long as u8, 0, |o| {
+                times(o, long);
                 o.u32(t.timescale);
-                o.u32(ticks.min(u32::MAX as u64) as u32);
+                duration(o, long, ticks);
                 o.u16(0x55c4); // "und"
                 o.u16(0);
             });
@@ -338,4 +360,65 @@ fn audio_entry(o: &mut Vec<u8>, asc: &[u8]) {
             o.extend_from_slice(&[6, 1, 2]);
         });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Version byte and the 64- or 32-bit duration of the first `kind` box in `data`.
+    fn version_and_duration(data: &[u8], kind: &[u8; 4], v0_at: usize, v1_at: usize) -> (u8, u64) {
+        let at = data.windows(4).position(|w| w == kind).unwrap() + 4;
+        let version = data[at];
+        let value = if version == 1 {
+            u64::from_be_bytes(data[at + v1_at..][..8].try_into().unwrap())
+        } else {
+            u32::from_be_bytes(data[at + v0_at..][..4].try_into().unwrap()) as u64
+        };
+        (version, value)
+    }
+
+    fn audio(ticks_per_sample: u32, samples: u32) -> Table {
+        let mut t = Table::new(Kind::Audio { asc: vec![0x11, 0x90] }, "a".into(), 48_000);
+        t.stts.push((samples, ticks_per_sample));
+        t
+    }
+
+    #[test]
+    fn a_day_long_audio_track_gets_a_64_bit_duration() {
+        // 30 hours at 48 kHz: past 32 bits in the track's timescale, not in the movie's.
+        let samples = (30u64 * 3600 * 48_000 / 1024) as u32;
+        let mut out = Vec::new();
+        moov(&mut out, &[audio(1024, samples)], false);
+        let ticks = samples as u64 * 1024;
+        assert!(ticks > u32::MAX as u64);
+        assert_eq!(version_and_duration(&out, b"mdhd", 16, 24), (1, ticks));
+        assert_eq!(version_and_duration(&out, b"mvhd", 16, 24), (0, 30 * 3600 * 1000));
+        assert_eq!(version_and_duration(&out, b"tkhd", 20, 28), (0, 30 * 3600 * 1000));
+    }
+
+    #[test]
+    fn ordinary_lengths_keep_version_0() {
+        let mut out = Vec::new();
+        moov(&mut out, &[audio(1024, 48_000 * 60 / 1024)], false);
+        assert_eq!(version_and_duration(&out, b"mdhd", 16, 24).0, 0);
+        assert_eq!(version_and_duration(&out, b"mvhd", 16, 24).0, 0);
+    }
+
+    #[test]
+    fn movie_and_track_durations_past_32_bits_get_version_1() {
+        // 60 days: past 32 bits even in milliseconds.
+        let mut t = audio(u32::MAX, 3600);
+        t.start = 48_000 * 2;
+        let mut out = Vec::new();
+        moov(&mut out, &[t], false);
+        let ms = to_movie(48_000 * 2 + 3600 * u32::MAX as u64, 48_000);
+        assert!(ms > u32::MAX as u64);
+        assert_eq!(version_and_duration(&out, b"mvhd", 16, 24), (1, ms));
+        assert_eq!(version_and_duration(&out, b"tkhd", 20, 28), (1, ms));
+        // The edit list grows too, with its empty edit still marked by media time -1.
+        let at = out.windows(4).position(|w| w == b"elst").unwrap() + 4;
+        assert_eq!(out[at], 1);
+        assert_eq!(&out[at + 16..at + 24], [0xff; 8]);
+    }
 }

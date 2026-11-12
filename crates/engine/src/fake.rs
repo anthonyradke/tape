@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tape_core::game::Foreground;
-use tape_core::ipc::{AudioDevice, Monitor, Probe};
+use tape_core::ipc::{AudioDevice, CodecLimit, Monitor, Probe};
 use tape_core::mp4::codec::parse_frame;
 use tape_core::packet::{from_micros, Codec, VideoFormat, AAC_FRAME, AUDIO_RATE};
 use tape_core::settings::Settings;
@@ -116,6 +116,7 @@ impl Backend for Fake {
             gpu: "Fake GPU".into(),
             driver: "0".into(),
             codecs: vec![Codec::H264],
+            limits: vec![CodecLimit { codec: Codec::H264, max_width: 4096, max_height: 4096 }],
             nvenc_error: None,
             monitors: vec![Monitor { id: "fake".into(), name: "Fake monitor".into(), width: 640, height: 360, hz: 60, primary: true }],
             outputs: vec![AudioDevice { id: "out".into(), name: "Fake speakers".into() }],

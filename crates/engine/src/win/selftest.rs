@@ -358,9 +358,10 @@ pub fn report(backend: &Windows, settings: &Settings) -> String {
         Some(Err(e)) => {
             line!(out, "  FAILED, {e}");
         }
-        Some(Ok(codecs)) => {
-            let names: Vec<_> = codecs.iter().map(|c| codec_name(*c)).collect();
+        Some(Ok(limits)) => {
+            let names: Vec<_> = limits.iter().map(|l| format!("{} (up to {}x{})", codec_name(l.codec), l.max_width, l.max_height)).collect();
             line!(out, "  this GPU encodes {}", names.join(", "));
+            let codecs: Vec<_> = limits.iter().map(|l| l.codec).collect();
             let settings = Settings { capture: CaptureMethod::Auto, ..settings.clone() };
             for codec in codecs {
                 check_encode(&mut out, &settings, codec, codec_name(codec));

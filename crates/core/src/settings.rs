@@ -164,11 +164,22 @@ impl Settings {
 
     /// Output size for a monitor, up or down, keeping its shape, with even dimensions as the encoder
     /// needs. Goes by the short edge, so 1440p means the same on a monitor turned on its side.
-    pub fn output_size(&self, width: u32, height: u32) -> (u32, u32) {
+    /// `max` is the largest the encoder takes (H.264 on NVENC stops at 4096 wide, which a 21:9
+    /// monitor at 2160p passes); a size over it is scaled down to fit, still keeping the shape.
+    pub fn output_size(&self, width: u32, height: u32, max: (u32, u32)) -> (u32, u32) {
         let short = width.min(height).max(1) as u64;
-        let scale = |edge: u32| (edge as u64 * self.resolution as u64 / short) as u32;
-        let (w, h) = if self.resolution == 0 { (width, height) } else { (scale(width), scale(height)) };
-        (w & !1, h & !1)
+        let scale = |edge: u32| edge as u64 * self.resolution as u64 / short;
+        let (mut w, mut h) = if self.resolution == 0 { (width as u64, height as u64) } else { (scale(width), scale(height)) };
+        let (max_w, max_h) = (max.0.max(2) as u64, max.1.max(2) as u64);
+        if w > max_w || h > max_h {
+            // Whichever edge is further over decides the factor.
+            if w * max_h >= h * max_w {
+                (w, h) = (max_w, h * max_w / w.max(1));
+            } else {
+                (w, h) = (w * max_h / h.max(1), max_h);
+            }
+        }
+        (w as u32 & !1, h as u32 & !1)
     }
 
     /// Whether changing from `other` means restarting the encoder.
@@ -308,18 +319,20 @@ mod tests {
         assert_eq!((s.fps, s.bitrate_mbps, s.replay_seconds, s.resolution), (15, 500, 5, 144));
     }
 
+    const NO_LIMIT: (u32, u32) = (u32::MAX, u32::MAX);
+
     #[test]
     fn output_keeps_aspect_and_stays_even() {
         let s = Settings { resolution: 1080, ..Default::default() };
-        assert_eq!(s.output_size(2560, 1440), (1920, 1080));
-        assert_eq!(s.output_size(3440, 1440), (2580, 1080));
+        assert_eq!(s.output_size(2560, 1440, NO_LIMIT), (1920, 1080));
+        assert_eq!(s.output_size(3440, 1440, NO_LIMIT), (2580, 1080));
         let native = Settings::default();
-        assert_eq!(native.output_size(1367, 769), (1366, 768));
+        assert_eq!(native.output_size(1367, 769, NO_LIMIT), (1366, 768));
     }
 
     #[test]
     fn output_can_be_larger_than_the_monitor() {
-        let at = |resolution| Settings { resolution, ..Default::default() }.output_size(1920, 1080);
+        let at = |resolution| Settings { resolution, ..Default::default() }.output_size(1920, 1080, NO_LIMIT);
         assert_eq!(at(1440), (2560, 1440));
         assert_eq!(at(2160), (3840, 2160));
     }
@@ -327,7 +340,24 @@ mod tests {
     #[test]
     fn resolution_goes_by_the_short_edge() {
         let s = Settings { resolution: 1440, ..Default::default() };
-        assert_eq!(s.output_size(1080, 1920), (1440, 2560));
+        assert_eq!(s.output_size(1080, 1920, NO_LIMIT), (1440, 2560));
+    }
+
+    #[test]
+    fn output_fits_the_encoder_limits() {
+        let h264 = (4096, 4096);
+        let s = Settings { resolution: 2160, ..Default::default() };
+        // 5160x2160 is what 2160p asks of a 21:9 monitor.
+        assert_eq!(s.output_size(3440, 1440, h264), (4096, 1714));
+        assert_eq!(s.output_size(1440, 3440, h264), (1714, 4096));
+        assert_eq!(s.output_size(3440, 1440, (8192, 8192)), (5160, 2160));
+        // Native size of a super-wide monitor, and a limit tighter in height than width.
+        assert_eq!(Settings::default().output_size(7680, 2160, h264), (4096, 1152));
+        assert_eq!(Settings::default().output_size(3840, 2160, (4096, 2048)), (3640, 2048));
+        // Within the limits nothing changes, and the result is always even.
+        assert_eq!(s.output_size(1920, 1080, h264), (3840, 2160));
+        let (w, h) = Settings::default().output_size(5001, 3001, (4095, 4095));
+        assert!(w <= 4095 && h <= 4095 && w % 2 == 0 && h % 2 == 0, "{w}x{h}");
     }
 
     #[test]

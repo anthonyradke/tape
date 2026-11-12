@@ -6,6 +6,7 @@ use std::mem::{transmute, zeroed};
 use std::ptr::null_mut;
 
 use nvenc::*;
+use tape_core::ipc::CodecLimit;
 use tape_core::packet::Codec;
 use tape_core::settings::{Preset, Settings};
 use windows::core::{s, w, Interface};
@@ -122,12 +123,36 @@ fn codecs_of(library: &Library, session: *mut c_void) -> Result<Vec<Codec>, Stri
     }
 }
 
-/// Which codecs this GPU can encode, by opening a session and asking.
-pub fn supported(output: &OutputInfo) -> Result<Vec<Codec>, String> {
+fn cap(library: &Library, session: *mut c_void, codec: Codec, which: NV_ENC_CAPS) -> Option<u32> {
+    let mut param: NV_ENC_CAPS_PARAM = unsafe { zeroed() };
+    param.version = CAPS_PARAM_VER;
+    param.capsToQuery = which;
+    let mut value = 0;
+    let status = unsafe { library.api.nvEncGetEncodeCaps.unwrap()(session, codec_guid(codec), &mut param, &mut value) };
+    (status == NV_ENC_SUCCESS && value > 0).then_some(value as u32)
+}
+
+/// The largest frame the encoder takes for `codec`, or no limit if the driver doesn't say.
+fn max_size_of(library: &Library, session: *mut c_void, codec: Codec) -> (u32, u32) {
+    let width = cap(library, session, codec, NV_ENC_CAPS_WIDTH_MAX).unwrap_or(u32::MAX);
+    let height = cap(library, session, codec, NV_ENC_CAPS_HEIGHT_MAX).unwrap_or(u32::MAX);
+    (width, height)
+}
+
+/// Which codecs this GPU can encode and how large, by opening a session and asking.
+pub fn supported(output: &OutputInfo) -> Result<Vec<CodecLimit>, String> {
     let library = Library::load()?;
     let gfx = Gfx::new(&output.adapter)?;
     let session = open_session(&library, &gfx.device)?;
-    let codecs = codecs_of(&library, session);
+    let codecs = codecs_of(&library, session).map(|codecs| {
+        codecs
+            .into_iter()
+            .map(|codec| {
+                let (max_width, max_height) = max_size_of(&library, session, codec);
+                CodecLimit { codec, max_width, max_height }
+            })
+            .collect()
+    });
     unsafe { library.api.nvEncDestroyEncoder.unwrap()(session) };
     codecs
 }
@@ -143,23 +168,23 @@ pub struct Encoder {
 }
 
 impl Encoder {
-    pub fn open(gfx: &Gfx, input: &ID3D11Texture2D, settings: &Settings, width: u32, height: u32) -> Result<Encoder, String> {
+    /// A session that isn't set up yet, so its limits can decide the size it's then set up with.
+    pub fn new(gfx: &Gfx) -> Result<Encoder, String> {
         let library = Library::load()?;
         let session = open_session(&library, &gfx.device)?;
-        let mut encoder = Encoder {
-            library,
-            session,
-            bitstream: null_mut(),
-            registered: null_mut(),
-            width,
-            height,
-            frame: 0,
-        };
-        encoder.initialize(input, settings)?;
-        Ok(encoder)
+        Ok(Encoder { library, session, bitstream: null_mut(), registered: null_mut(), width: 0, height: 0, frame: 0 })
     }
 
-    fn initialize(&mut self, input: &ID3D11Texture2D, settings: &Settings) -> Result<(), String> {
+    /// The largest frame this session takes for `codec`.
+    pub fn max_size(&self, codec: Codec) -> Result<(u32, u32), String> {
+        if !codecs_of(&self.library, self.session)?.contains(&codec) {
+            return Err(format!("This GPU can't encode {}", super::codec_name(codec)));
+        }
+        Ok(max_size_of(&self.library, self.session, codec))
+    }
+
+    pub fn initialize(&mut self, input: &ID3D11Texture2D, settings: &Settings, width: u32, height: u32) -> Result<(), String> {
+        (self.width, self.height) = (width, height);
         let api = &self.library.api;
         let codec = settings.codec;
         if !codecs_of(&self.library, self.session)?.contains(&codec) {

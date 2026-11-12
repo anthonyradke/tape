@@ -112,7 +112,10 @@ impl Backend for Windows {
                 }
                 match nvidia {
                     Some(o) => match encoder::supported(o) {
-                        Ok(codecs) => probe.codecs = codecs,
+                        Ok(limits) => {
+                            probe.codecs = limits.iter().map(|l| l.codec).collect();
+                            probe.limits = limits;
+                        }
                         Err(e) => probe.nvenc_error = Some(e),
                     },
                     None => probe.nvenc_error = Some("No monitor is connected to an NVIDIA GPU".into()),

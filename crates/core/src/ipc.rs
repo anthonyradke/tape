@@ -85,12 +85,23 @@ pub struct AudioDevice {
     pub name: String,
 }
 
+/// The largest frame the GPU's encoder takes for one codec. The output size is scaled down to fit.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodecLimit {
+    pub codec: Codec,
+    pub max_width: u32,
+    pub max_height: u32,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Probe {
     pub gpu: String,
     pub driver: String,
     pub codecs: Vec<Codec>,
+    /// One entry per codec in `codecs`, when the driver answered.
+    pub limits: Vec<CodecLimit>,
     pub nvenc_error: Option<String>,
     pub monitors: Vec<Monitor>,
     pub outputs: Vec<AudioDevice>,

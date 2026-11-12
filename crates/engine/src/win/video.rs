@@ -57,10 +57,16 @@ pub fn run(settings: &Settings, ctx: &VideoContext) -> Result<(), String> {
         return Err(format!("{} is connected to {}, not an NVIDIA GPU", output.id, output.gpu));
     }
     let gfx = Gfx::new(&output.adapter)?;
-    let (width, height) = settings.output_size(output.width, output.height);
+    let mut encoder = Encoder::new(&gfx)?;
+    let limit = encoder.max_size(settings.codec)?;
+    let (width, height) = settings.output_size(output.width, output.height, limit);
+    let wanted = settings.output_size(output.width, output.height, (u32::MAX, u32::MAX));
+    if wanted != (width, height) {
+        log!("video: {}x{} is over the encoder's {}x{} limit, scaled to fit", wanted.0, wanted.1, limit.0, limit.1);
+    }
     let mut converter = Converter::new(&gfx, width, height)?;
     let target = converter.target().clone();
-    let mut encoder = Encoder::open(&gfx, &target, settings, width, height)?;
+    encoder.initialize(&target, settings, width, height)?;
 
     ctx.stats.width.store(width, Ordering::Relaxed);
     ctx.stats.height.store(height, Ordering::Relaxed);

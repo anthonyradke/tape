@@ -75,7 +75,7 @@ fn main() {
             let handle = app.handle();
             let (shared, first_run) = state::Shared::load(handle);
             app.manage(shared);
-            app.manage(share::Shares::default());
+            app.manage(share::Shares::load(handle));
             app.manage(library::Stars::load(handle));
             commands::allow_media(handle);
             if first_run {
@@ -90,6 +90,8 @@ fn main() {
             if !start_hidden {
                 show_window(handle);
             }
+            let prune = handle.clone();
+            std::thread::spawn(move || library::prune(&prune));
             Ok(())
         })
         .on_window_event(|window, event| {

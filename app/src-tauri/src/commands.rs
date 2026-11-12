@@ -1,8 +1,6 @@
 //! What the window and the tray can do.
 
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::Ordering;
@@ -33,7 +31,7 @@ const MAX_THUMBNAIL: usize = 2 << 20;
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClipFile {
-    path: String,
+    pub(crate) path: String,
     name: String,
     game: String,
     /// "clip" for instant replay, "recording" otherwise.
@@ -41,7 +39,7 @@ pub struct ClipFile {
     bytes: u64,
     modified: u64,
     /// Names its thumbnail, which changes if the file does.
-    key: String,
+    pub(crate) key: String,
     thumb: Option<String>,
     seconds: Option<f64>,
     starred: bool,
@@ -70,10 +68,20 @@ fn is_mp4(path: &Path) -> bool {
     path.extension().is_some_and(|x| x.eq_ignore_ascii_case("mp4"))
 }
 
+/// 64-bit FNV-1a. Spelled out rather than std's hasher, whose output may change with any Rust
+/// release: these keys name files on disk and links on the share server.
+fn fnv1a(parts: &[&[u8]]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in parts.iter().flat_map(|p| p.iter()) {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
 fn thumbnail_key(path: &Path, bytes: u64, modified: u64) -> String {
-    let mut hasher = DefaultHasher::new();
-    (path, bytes, modified).hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    let key = fnv1a(&[path.as_os_str().as_encoded_bytes(), &[0], &bytes.to_le_bytes(), &modified.to_le_bytes()]);
+    format!("{key:016x}")
 }
 
 /// Thumbnails by key. Each file is called <key>_<duration in ms>.jpg, so finding them also gives
@@ -126,7 +134,7 @@ fn add_clips(dir: &Path, game: &str, known: &HashMap<String, (PathBuf, f64)>, cl
 
 /// Everything saved, newest first: the clips folder and one level of game folders. Skips the
 /// recording in progress, which isn't a finished video yet.
-fn all_clips(app: &AppHandle) -> Vec<ClipFile> {
+pub(crate) fn all_clips(app: &AppHandle) -> Vec<ClipFile> {
     let shared = app.state::<Shared>();
     let stars = app.state::<crate::library::Stars>();
     let folder = shared.folder();
@@ -494,6 +502,19 @@ mod tests {
         assert!(!within(&folder, &folder.join("one").join("two").join("a.mp4")));
         assert!(!within(&folder, &folder));
         assert!(!within(&folder, &folder.with_file_name("Other").join("a.mp4")));
+    }
+
+    #[test]
+    fn keys_are_fnv1a() {
+        // The published test vectors.
+        assert_eq!(fnv1a(&[]), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(fnv1a(&[b"a"]), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(fnv1a(&[b"fo", b"obar"]), 0x8594_4171_f739_67e8);
+        let key = thumbnail_key(Path::new("clip.mp4"), 1, 2);
+        assert_eq!(key.len(), 16);
+        assert_eq!(key, thumbnail_key(Path::new("clip.mp4"), 1, 2));
+        assert_ne!(key, thumbnail_key(Path::new("clip.mp4"), 1, 3));
+        assert_ne!(key, thumbnail_key(Path::new("clip2.mp4"), 1, 2));
     }
 
     #[test]

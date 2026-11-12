@@ -119,6 +119,85 @@ pub struct Shares {
     usage: Mutex<Option<Usage>>,
     cancel: Mutex<Option<Arc<Cancel>>>,
     child: Mutex<Option<Child>>,
+    /// Clip keys that changed since a link was made (a rename), old to new. The server keeps the
+    /// key a link was made with, so its links are matched to clips through this.
+    moved: Mutex<HashMap<String, String>>,
+    moved_path: PathBuf,
+}
+
+impl Shares {
+    pub fn load(app: &AppHandle) -> Shares {
+        let moved_path = app.state::<Shared>().settings_path.with_file_name("links.json");
+        let moved = std::fs::read_to_string(&moved_path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        Shares { moved: Mutex::new(moved), moved_path, ..Shares::default() }
+    }
+
+    fn save_moved(&self, moved: &HashMap<String, String>) {
+        let Ok(text) = serde_json::to_string_pretty(moved) else { return };
+        let temporary = self.moved_path.with_extension("tmp");
+        if std::fs::write(&temporary, text).is_ok() {
+            let _ = std::fs::rename(&temporary, &self.moved_path);
+        }
+    }
+}
+
+/// Where a key ended up after any number of renames.
+fn latest(moved: &HashMap<String, String>, key: &str) -> String {
+    let mut key = key;
+    // Bounded: a rename back to an earlier name makes a loop.
+    for _ in 0..32 {
+        match moved.get(key) {
+            Some(next) if next != key => key = next,
+            _ => break,
+        }
+    }
+    key.to_string()
+}
+
+/// Points each link at its clip's current key, and forgets moves no live link needs. True if
+/// `moved` changed.
+fn follow_moves(usage: &mut Usage, moved: &mut HashMap<String, String>) -> bool {
+    let mut needed = std::collections::HashSet::new();
+    for link in &mut usage.clips {
+        let mut key = link.source.clone();
+        for _ in 0..32 {
+            match moved.get(&key) {
+                Some(next) if needed.insert(key.clone()) => key = next.clone(),
+                _ => break,
+            }
+        }
+        link.source = latest(moved, &link.source);
+    }
+    let before = moved.len();
+    moved.retain(|key, _| needed.contains(key));
+    moved.len() != before
+}
+
+/// A clip's key changed from `old` to `new` (it was renamed), so its link should follow.
+pub fn moved(app: &AppHandle, old: &str, new: &str) {
+    if !set_up(app) || old == new {
+        return;
+    }
+    let shares = app.state::<Shares>();
+    {
+        let mut moved = shares.moved.lock().unwrap();
+        moved.insert(old.to_string(), new.to_string());
+        shares.save_moved(&moved);
+    }
+    let usage = {
+        let mut usage = shares.usage.lock().unwrap();
+        let Some(usage) = usage.as_mut() else { return };
+        let mut changed = false;
+        for link in usage.clips.iter_mut().filter(|l| l.source == old) {
+            link.source = new.to_string();
+            changed = true;
+        }
+        if !changed {
+            return;
+        }
+        usage.clone()
+    };
+    let _ = app.emit("share-usage", &usage);
 }
 
 struct Server {
@@ -232,8 +311,15 @@ fn plain(error: &reqwest::Error) -> String {
 async fn fetch_usage(app: &AppHandle) -> Result<Usage, String> {
     let server = server(app)?;
     let value = call(&server, reqwest::Method::GET, "/api/usage", None, Duration::from_secs(20)).await?;
-    let usage: Usage = serde_json::from_value(value).map_err(|e| format!("The share server sent something unexpected: {e}"))?;
-    *app.state::<Shares>().usage.lock().unwrap() = Some(usage.clone());
+    let mut usage: Usage = serde_json::from_value(value).map_err(|e| format!("The share server sent something unexpected: {e}"))?;
+    let shares = app.state::<Shares>();
+    {
+        let mut moved = shares.moved.lock().unwrap();
+        if follow_moves(&mut usage, &mut moved) {
+            shares.save_moved(&moved);
+        }
+    }
+    *shares.usage.lock().unwrap() = Some(usage.clone());
     let _ = app.emit("share-usage", &usage);
     Ok(usage)
 }
@@ -549,6 +635,25 @@ mod tests {
         assert!(began.elapsed() < Duration::from_secs(5));
         // Already cancelled: nothing more is sent.
         assert!(run(cancel.until(async { 1 })).is_none());
+    }
+
+    #[test]
+    fn links_follow_renamed_clips() {
+        let link = |source: &str| Link { source: source.into(), ..Link::default() };
+        let mut usage = Usage { clips: vec![link("a"), link("x")], ..Usage::default() };
+        let mut moved: HashMap<String, String> =
+            [("a", "b"), ("b", "c"), ("gone", "d"), ("x", "y"), ("y", "x")].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        assert!(follow_moves(&mut usage, &mut moved));
+        assert_eq!(usage.clips[0].source, "c");
+        // Renamed there and back: it ends somewhere rather than going round for ever.
+        assert!(["x", "y"].contains(&usage.clips[1].source.as_str()));
+        // Nothing points through "gone" any more.
+        assert!(!moved.contains_key("gone"));
+        assert_eq!(moved.len(), 4);
+        // Again with the server's original keys: nothing more to forget.
+        let mut again = Usage { clips: vec![link("a"), link("x")], ..Usage::default() };
+        assert!(!follow_moves(&mut again, &mut moved));
+        assert_eq!(again.clips[0].source, "c");
     }
 
     #[test]

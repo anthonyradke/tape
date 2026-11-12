@@ -9,8 +9,10 @@ use tape_core::mp4::trim::{self, Info};
 use tape_core::naming;
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::commands::{clip_file, clip_key, thumbnails};
+use crate::commands::{all_clips, clip_file, clip_key, thumbnails};
 use crate::state::Shared;
+
+const THUMBNAIL_GRACE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 /// Starred clips, by path. Kept in a file of their own beside the settings.
 pub struct Stars {
@@ -110,12 +112,18 @@ pub fn rename_clip(app: AppHandle, path: String, name: String) -> Result<String,
     if to.exists() && !same_file {
         return Err("There's already a clip with that name.".into());
     }
+    let old_key = clip_key(&file);
     let thumb = thumbnail_of(&app, &file);
     std::fs::rename(&file, &to).map_err(|e| format!("Couldn't rename it: {e}"))?;
-    // The thumbnail's key comes from the path, so it moves with the file instead of being made again.
-    if let (Some((old, seconds)), Some(key)) = (thumb, clip_key(&to)) {
+    // The key comes from the path, so the thumbnail moves with the file instead of being made
+    // again, and a shared link is told where its clip went.
+    let new_key = clip_key(&to);
+    if let (Some((old, seconds)), Some(key)) = (thumb, &new_key) {
         let shared = app.state::<Shared>();
         let _ = std::fs::rename(old, shared.thumbnails.join(format!("{key}_{}.jpg", (seconds * 1000.0) as u64)));
+    }
+    if let (Some(old), Some(new)) = (old_key, new_key) {
+        crate::share::moved(&app, &old, &new);
     }
     let new = to.display().to_string();
     let stars = app.state::<Stars>();
@@ -127,6 +135,35 @@ pub fn rename_clip(app: AppHandle, path: String, name: String) -> Result<String,
     }
     let _ = app.emit("changed", ());
     Ok(new)
+}
+
+/// Thumbnails nobody's file has any more (deleted outside tape, or keyed the way older versions
+/// did) and stars on files that are gone. Cheap, so it runs at every start. Skipped while the clips
+/// folder can't be reached (a drive that isn't plugged in), where everything would look gone.
+pub fn prune(app: &AppHandle) {
+    let shared = app.state::<Shared>();
+    let folder = shared.folder();
+    if !folder.is_dir() {
+        return;
+    }
+    let keys: BTreeSet<String> = all_clips(app).into_iter().map(|c| c.key).collect();
+    // Not one the gallery may be writing for a clip saved since the list above was made.
+    let fresh = |path: &Path| {
+        std::fs::metadata(path).and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().map_or(true, |age| age < THUMBNAIL_GRACE))
+    };
+    for (key, (path, _)) in thumbnails(&shared.thumbnails) {
+        if !keys.contains(&key) && !fresh(&path) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+    let stars = app.state::<Stars>();
+    let gone = |star: &String| {
+        let path = Path::new(star);
+        !path.exists() && (path.starts_with(&folder) || path.parent().is_some_and(Path::is_dir))
+    };
+    if stars.set.lock().unwrap().iter().any(gone) {
+        stars.change(|s| s.retain(|star| !gone(star)));
+    }
 }
 
 #[tauri::command]

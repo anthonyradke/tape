@@ -99,6 +99,39 @@ pub fn own_process() -> std::io::Result<Process> {
     Ok(command)
 }
 
+/// Makes `child` end when tape does, however tape ends: for the self-test and the share
+/// conversion, which are only worth anything to this tape. Never the engine, which has to outlive
+/// tape long enough to finish a recording. Best effort: a child that can't join just runs on.
+#[cfg(windows)]
+pub fn end_with_tape(child: &Child) {
+    use std::os::windows::io::AsRawHandle;
+    use std::sync::OnceLock;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    // One job for the life of the process. Its handle is never closed: Windows closes it when tape
+    // exits or crashes, and that is what ends everything in it.
+    static JOB: OnceLock<Option<usize>> = OnceLock::new();
+    let job = JOB.get_or_init(|| unsafe {
+        let job = CreateJobObjectW(None, windows::core::PCWSTR::null()).ok()?;
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let size = size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32;
+        SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits as *const _ as *const _, size).ok()?;
+        Some(job.0 as usize)
+    });
+    if let Some(job) = *job {
+        unsafe {
+            let _ = AssignProcessToJobObject(HANDLE(job as *mut _), HANDLE(child.as_raw_handle()));
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn end_with_tape(_child: &Child) {}
+
 fn spawn_engine(shared: &Shared) -> std::io::Result<Child> {
     let mut command = own_process()?;
     command.arg("--engine").arg(&shared.log_path).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());

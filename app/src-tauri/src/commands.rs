@@ -471,6 +471,7 @@ fn run_self_test(shared: &Shared) -> String {
         Ok(child) => child,
         Err(e) => return format!("Couldn't start the self-test: {e}"),
     };
+    supervisor::end_with_tape(&child);
     let began = Instant::now();
     let finished = loop {
         match child.try_wait() {

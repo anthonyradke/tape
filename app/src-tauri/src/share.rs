@@ -339,6 +339,7 @@ fn convert(app: &AppHandle, input: &Path, output: &Path) -> Result<(u32, u32, f6
     let mut process = supervisor::own_process().map_err(|e| e.to_string())?;
     process.arg("--share-copy").arg(input).arg(output).arg(&shared.log_path);
     let mut child = process.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| format!("Couldn't start the conversion: {e}"))?;
+    supervisor::end_with_tape(&child);
     let stdout = child.stdout.take().unwrap();
     *app.state::<Shares>().child.lock().unwrap() = Some(child);
     let path = input.display().to_string();

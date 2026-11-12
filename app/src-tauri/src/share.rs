@@ -3,11 +3,13 @@
 //! which the UI shows against the free allowance. The server is `share/worker.js`.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::task::Poll;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -18,7 +20,59 @@ use crate::commands;
 use crate::state::Shared;
 use crate::supervisor;
 
-const PART_TRIES: u32 = 3;
+/// Waits before each retry of a part. Only failures that may pass are retried: no answer, or the
+/// server's own trouble (5xx). A 4xx would only say the same again.
+const RETRY_AFTER: [Duration; 3] = [Duration::from_secs(1), Duration::from_secs(4), Duration::from_secs(10)];
+const CANCELLED: &str = "Cancelled.";
+
+/// Set by `cancel_share`. Whatever the share is waiting on (a request, a wait before retrying)
+/// stops on it straight away rather than at the next check.
+#[derive(Default)]
+struct Cancel {
+    flag: AtomicBool,
+    notify: tokio::sync::Notify,
+}
+
+impl Cancel {
+    fn cancel(&self) {
+        self.flag.store(true, Ordering::Relaxed);
+        self.notify.notify_waiters();
+    }
+
+    fn is_set(&self) -> bool {
+        self.flag.load(Ordering::Relaxed)
+    }
+
+    /// `work`'s result, or None once cancelled.
+    async fn until<T>(&self, work: impl Future<Output = T>) -> Option<T> {
+        let mut work = std::pin::pin!(work);
+        let mut cancelled = std::pin::pin!(self.notify.notified());
+        // Listening before looking at the flag, so a cancel in between isn't missed.
+        cancelled.as_mut().enable();
+        if self.is_set() {
+            return None;
+        }
+        std::future::poll_fn(|cx| {
+            if cancelled.as_mut().poll(cx).is_ready() {
+                return Poll::Ready(None);
+            }
+            work.as_mut().poll(cx).map(Some)
+        })
+        .await
+    }
+}
+
+/// A failed request, in words for the UI, and whether trying again could help.
+struct Failure {
+    message: String,
+    retry: bool,
+}
+
+impl From<Failure> for String {
+    fn from(failure: Failure) -> String {
+        failure.message
+    }
+}
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -63,7 +117,7 @@ pub struct Job {
 pub struct Shares {
     jobs: Mutex<HashMap<String, Job>>,
     usage: Mutex<Option<Usage>>,
-    cancel: Mutex<Option<Arc<AtomicBool>>>,
+    cancel: Mutex<Option<Arc<Cancel>>>,
     child: Mutex<Option<Child>>,
 }
 
@@ -115,22 +169,55 @@ fn client() -> &'static reqwest::Client {
 }
 
 /// A request to the server's API, with its error turned into words for the UI.
-async fn call(server: &Server, method: reqwest::Method, path: &str, body: Option<reqwest::Body>, timeout: Duration) -> Result<Value, String> {
+async fn call(server: &Server, method: reqwest::Method, path: &str, body: Option<reqwest::Body>, timeout: Duration) -> Result<Value, Failure> {
     let mut request = client().request(method, format!("{}{path}", server.url)).bearer_auth(&server.key).timeout(timeout);
     if let Some(body) = body {
         request = request.body(body);
     }
-    let response = request.send().await.map_err(|e| format!("Couldn't reach the share server: {}", plain(&e)))?;
+    let response = request
+        .send()
+        .await
+        .map_err(|e| Failure { message: format!("Couldn't reach the share server: {}", plain(&e)), retry: true })?;
     let status = response.status();
     let value: Value = response.json().await.unwrap_or(Value::Null);
     if status == reqwest::StatusCode::UNAUTHORIZED {
-        return Err("The share server turned down the upload key. Check it in Settings.".into());
+        let message = "The share server turned down the upload key. Check it in Settings.".into();
+        return Err(Failure { message, retry: false });
     }
     if !status.is_success() {
         let said = value.get("error").and_then(Value::as_str).map(str::to_string);
-        return Err(said.unwrap_or_else(|| format!("The share server answered {status}.")));
+        let message = said.unwrap_or_else(|| format!("The share server answered {status}."));
+        return Err(Failure { message, retry: status.is_server_error() });
     }
     Ok(value)
+}
+
+/// `call`, tried again after the waits in `RETRY_AFTER` when the failure may pass, and given up
+/// on as soon as the share is cancelled. `body` makes a fresh body for each try.
+async fn call_retrying(
+    server: &Server,
+    method: reqwest::Method,
+    path: &str,
+    body: impl Fn() -> Option<reqwest::Body>,
+    timeout: Duration,
+    cancel: &Cancel,
+) -> Result<Value, String> {
+    let mut waits = RETRY_AFTER.iter();
+    loop {
+        let Some(result) = cancel.until(call(server, method.clone(), path, body(), timeout)).await else {
+            return Err(CANCELLED.into());
+        };
+        match result {
+            Ok(value) => return Ok(value),
+            Err(failure) if failure.retry => {
+                let Some(wait) = waits.next() else { return Err(failure.message) };
+                if cancel.until(tokio::time::sleep(*wait)).await.is_none() {
+                    return Err(CANCELLED.into());
+                }
+            }
+            Err(failure) => return Err(failure.message),
+        }
+    }
 }
 
 /// reqwest's errors read as a chain; the innermost cause is the useful part.
@@ -187,8 +274,8 @@ fn convert(app: &AppHandle, input: &Path, output: &Path) -> Result<(u32, u32, f6
     result
 }
 
-/// Sends the file in the parts the server asked for, retrying each a few times.
-async fn upload(app: &AppHandle, server: &Server, path: &str, file: &Path, start: &Value, cancel: &AtomicBool) -> Result<(), String> {
+/// Sends the file in the parts the server asked for, retrying each (see `call_retrying`).
+async fn upload(app: &AppHandle, server: &Server, path: &str, file: &Path, start: &Value, cancel: &Cancel) -> Result<(), String> {
     let id = start["id"].as_str().unwrap_or_default();
     let upload = start["upload"].as_str().unwrap_or_default();
     let part_bytes = start["partBytes"].as_u64().unwrap_or(20 << 20) as usize;
@@ -203,32 +290,20 @@ async fn upload(app: &AppHandle, server: &Server, path: &str, file: &Path, start
             break;
         }
         let size = chunk.len() as u64;
-        let mut last = String::new();
-        let mut done = None;
-        for _ in 0..PART_TRIES {
-            if cancel.load(Ordering::Relaxed) {
-                return Err("Cancelled.".into());
-            }
-            let route = format!("/api/clips/{id}/parts/{number}?upload={upload}");
-            match call(server, reqwest::Method::PUT, &route, Some(chunk.clone().into()), Duration::from_secs(600)).await {
-                Ok(v) => {
-                    done = Some(v);
-                    break;
-                }
-                Err(e) => last = e,
-            }
-        }
-        let Some(part) = done else { return Err(last) };
+        let route = format!("/api/clips/{id}/parts/{number}?upload={upload}");
+        let body = || Some(chunk.clone().into());
+        let part = call_retrying(server, reqwest::Method::PUT, &route, body, Duration::from_secs(600), cancel).await?;
         parts.push(json!({ "part": part["part"], "etag": part["etag"] }));
         sent += size;
         set_job(app, job(path, "uploading", sent as f64 / total as f64));
     }
     let route = format!("/api/clips/{id}/complete?upload={upload}");
-    call(server, reqwest::Method::POST, &route, Some(json!({ "parts": parts }).to_string().into()), Duration::from_secs(60)).await?;
+    let body = json!({ "parts": parts }).to_string();
+    call_retrying(server, reqwest::Method::POST, &route, || Some(body.clone().into()), Duration::from_secs(60), cancel).await?;
     Ok(())
 }
 
-async fn share(app: &AppHandle, path: &str, cancel: &AtomicBool) -> Result<String, String> {
+async fn share(app: &AppHandle, path: &str, cancel: &Cancel) -> Result<String, String> {
     let server = server(app)?;
     let input = PathBuf::from(path);
     let key = commands::clip_key(&input).ok_or("That clip isn't there any more.")?;
@@ -256,15 +331,18 @@ async fn share(app: &AppHandle, path: &str, cancel: &AtomicBool) -> Result<Strin
         tauri::async_runtime::spawn_blocking(move || convert(&app, &input, &copy)).await.map_err(|e| e.to_string())?
     };
     let result = async {
-        let (width, height, seconds) = converted?;
-        if cancel.load(Ordering::Relaxed) {
-            return Err("Cancelled.".to_string());
+        // Cancelling kills the conversion, which then reads as one that failed.
+        if cancel.is_set() {
+            return Err(CANCELLED.to_string());
         }
+        let (width, height, seconds) = converted?;
         let bytes = std::fs::metadata(&copy).map_err(|e| e.to_string())?.len();
         let name = input.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         set_job(app, job(path, "uploading", 0.0));
         let info = json!({ "name": name, "bytes": bytes, "seconds": seconds, "width": width, "height": height, "source": key });
-        let start = call(&server, reqwest::Method::POST, "/api/clips", Some(info.to_string().into()), Duration::from_secs(30)).await?;
+        // Not retried: an answer lost on the way back would leave a second, empty upload behind.
+        let starting = call(&server, reqwest::Method::POST, "/api/clips", Some(info.to_string().into()), Duration::from_secs(30));
+        let start = cancel.until(starting).await.ok_or(CANCELLED)??;
         let id = start["id"].as_str().unwrap_or_default().to_string();
         if let Err(e) = upload(app, &server, path, &copy, &start, cancel).await {
             let route = format!("/api/clips/{id}?upload={}", start["upload"].as_str().unwrap_or_default());
@@ -290,7 +368,7 @@ pub async fn share_clip(app: AppHandle, path: String) -> Result<String, String> 
     if commands::clip_file(&app, &path).is_none() {
         return Err("Only clips in the clips folder can be shared.".into());
     }
-    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel = Arc::new(Cancel::default());
     let busy = {
         let shares = app.state::<Shares>();
         let mut current = shares.cancel.lock().unwrap();
@@ -319,8 +397,8 @@ pub async fn share_clip(app: AppHandle, path: String) -> Result<String, String> 
 #[tauri::command]
 pub fn cancel_share(app: AppHandle) {
     let shares = app.state::<Shares>();
-    if let Some(flag) = shares.cancel.lock().unwrap().as_ref() {
-        flag.store(true, Ordering::Relaxed);
+    if let Some(cancel) = shares.cancel.lock().unwrap().as_ref() {
+        cancel.cancel();
     }
     let mut child = shares.child.lock().unwrap();
     if let Some(child) = child.as_mut() {
@@ -406,6 +484,72 @@ fn copy_to_clipboard(text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use std::net::TcpListener;
+    use std::sync::atomic::AtomicUsize;
+    use std::time::Instant;
+
+    /// A server on this PC that answers each request with the next status in `answers` (and
+    /// never answers once they run out), counting what it got.
+    fn server_answering(answers: Vec<u16>) -> (Server, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let count = Arc::new(AtomicUsize::new(0));
+        let seen = count.clone();
+        std::thread::spawn(move || {
+            let mut answers = answers.into_iter();
+            let mut held = Vec::new();
+            for stream in listener.incoming().flatten() {
+                let mut stream = stream;
+                let mut request = [0u8; 4096];
+                let _ = std::io::Read::read(&mut stream, &mut request);
+                seen.fetch_add(1, Ordering::Relaxed);
+                match answers.next() {
+                    Some(code) => {
+                        let body = r#"{"ok":true}"#;
+                        let _ = write!(stream, "HTTP/1.1 {code} X\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+                    }
+                    None => held.push(stream),
+                }
+            }
+        });
+        (Server { url, key: "k".into() }, count)
+    }
+
+    fn run<T>(work: impl Future<Output = T>) -> T {
+        tauri::async_runtime::block_on(work)
+    }
+
+    #[test]
+    fn server_trouble_is_tried_again_and_a_refusal_is_not() {
+        let (server, count) = server_answering(vec![503, 200]);
+        let cancel = Cancel::default();
+        let got = run(call_retrying(&server, reqwest::Method::PUT, "/p", || None, Duration::from_secs(5), &cancel));
+        assert_eq!(got.unwrap()["ok"], true);
+        assert_eq!(count.load(Ordering::Relaxed), 2);
+
+        let (server, count) = server_answering(vec![404, 200]);
+        let got = run(call_retrying(&server, reqwest::Method::PUT, "/p", || None, Duration::from_secs(5), &cancel));
+        assert!(got.is_err());
+        assert_eq!(count.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn cancel_stops_a_request_in_flight() {
+        let (server, _) = server_answering(vec![]);
+        let cancel = Arc::new(Cancel::default());
+        let canceller = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            canceller.cancel();
+        });
+        let began = Instant::now();
+        let got = run(call_retrying(&server, reqwest::Method::PUT, "/p", || None, Duration::from_secs(60), &cancel));
+        assert_eq!(got.unwrap_err(), CANCELLED);
+        assert!(began.elapsed() < Duration::from_secs(5));
+        // Already cancelled: nothing more is sent.
+        assert!(run(cancel.until(async { 1 })).is_none());
+    }
 
     #[test]
     fn the_key_only_goes_over_https_or_to_this_pc() {

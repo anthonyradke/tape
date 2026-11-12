@@ -114,6 +114,24 @@ pub const MAX_MIC_DELAY_MS: u32 = 300;
 const PEAK: f64 = 1.5;
 
 impl Settings {
+    /// Reads a settings file field by field: anything that doesn't fit (a wrong type, a value
+    /// from a newer version) falls back to its default and the rest is kept, so one bad value
+    /// can't wipe the hotkeys, folder and share key. The flag says whether anything was dropped.
+    pub fn from_json_lenient(text: &str) -> (Settings, bool) {
+        let Ok(serde_json::Value::Object(file)) = serde_json::from_str::<serde_json::Value>(text) else {
+            return (Settings::default(), true);
+        };
+        let Ok(serde_json::Value::Object(mut accepted)) = serde_json::to_value(Settings::default()) else {
+            return (Settings::default(), true);
+        };
+        let mut dropped = false;
+        merge(&mut accepted, &file, &mut dropped, &|candidate| {
+            serde_json::from_value::<Settings>(serde_json::Value::Object(candidate.clone())).is_ok()
+        });
+        let settings = serde_json::from_value(serde_json::Value::Object(accepted)).unwrap_or_default();
+        (settings, dropped)
+    }
+
     /// Forces every value into a range the engine can run, so a hand-edited or old settings file
     /// can never stop it starting.
     pub fn normalized(mut self) -> Self {
@@ -173,6 +191,33 @@ impl Settings {
     }
 }
 
+type Map = serde_json::Map<String, serde_json::Value>;
+
+/// Copies each field of `file` that `fits` into `into`, field by field. Unknown keys are left
+/// out as serde would; nested objects (the hotkeys) are merged the same way, one key at a time.
+fn merge(into: &mut Map, file: &Map, dropped: &mut bool, fits: &dyn Fn(&Map) -> bool) {
+    for (key, value) in file {
+        let Some(old) = into.get(key).cloned() else { continue };
+        into.insert(key.clone(), value.clone());
+        if fits(into) {
+            continue;
+        }
+        into.insert(key.clone(), old.clone());
+        match (old, value) {
+            (serde_json::Value::Object(mut inner), serde_json::Value::Object(given)) => {
+                let fits_inner = |candidate: &Map| {
+                    let mut whole = into.clone();
+                    whole.insert(key.clone(), serde_json::Value::Object(candidate.clone()));
+                    fits(&whole)
+                };
+                merge(&mut inner, given, dropped, &fits_inner);
+                into.insert(key.clone(), serde_json::Value::Object(inner));
+            }
+            _ => *dropped = true,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,6 +234,71 @@ mod tests {
     fn settings_saved_before_the_overlay_existed_get_its_key() {
         let s: Settings = serde_json::from_str(r#"{"hotkeys": {"saveClip": "F8"}}"#).unwrap();
         assert_eq!((s.hotkeys.save_clip.as_str(), s.hotkeys.overlay.as_str()), ("F8", "Alt+Z"));
+    }
+
+    fn lenient(text: &str) -> (Settings, bool) {
+        Settings::from_json_lenient(text)
+    }
+
+    const KEPT: &str = r#""folder": "D:\\Clips", "shareKey": "k", "hotkeys": {"saveClip": "F8"}"#;
+
+    fn assert_kept(s: &Settings) {
+        assert_eq!((s.folder.as_str(), s.share_key.as_str(), s.hotkeys.save_clip.as_str()), ("D:\\Clips", "k", "F8"));
+    }
+
+    #[test]
+    fn a_float_where_a_whole_number_goes_keeps_everything_else() {
+        let (s, dropped) = lenient(&format!(r#"{{{KEPT}, "systemVolume": 100.0, "fps": 144}}"#));
+        assert!(dropped);
+        assert_kept(&s);
+        assert_eq!((s.system_volume, s.fps), (100, 144));
+    }
+
+    #[test]
+    fn a_null_string_keeps_everything_else() {
+        let (s, dropped) = lenient(&format!(r#"{{{KEPT}, "monitor": null}}"#));
+        assert!(dropped);
+        assert_kept(&s);
+        assert_eq!(s.monitor, "");
+    }
+
+    #[test]
+    fn a_negative_volume_keeps_everything_else() {
+        let (s, dropped) = lenient(&format!(r#"{{{KEPT}, "micVolume": -1}}"#));
+        assert!(dropped);
+        assert_kept(&s);
+        assert_eq!(s.mic_volume, 100);
+    }
+
+    #[test]
+    fn an_unknown_preset_from_a_newer_version_keeps_everything_else() {
+        let (s, dropped) = lenient(&format!(r#"{{{KEPT}, "preset": "lossless", "codec": "hevc"}}"#));
+        assert!(dropped);
+        assert_kept(&s);
+        assert_eq!((s.preset, s.codec), (Preset::Balanced, Codec::Hevc));
+    }
+
+    #[test]
+    fn one_bad_hotkey_keeps_the_others() {
+        let (s, dropped) = lenient(r#"{"hotkeys": {"saveClip": "F8", "overlay": 5}}"#);
+        assert!(dropped);
+        assert_eq!((s.hotkeys.save_clip.as_str(), s.hotkeys.overlay.as_str()), ("F8", "Alt+Z"));
+    }
+
+    #[test]
+    fn a_good_file_drops_nothing() {
+        let text = serde_json::to_string(&Settings { fps: 144, folder: "x".into(), ..Default::default() }).unwrap();
+        let (s, dropped) = lenient(&text);
+        assert!(!dropped);
+        assert_eq!(s, Settings { fps: 144, folder: "x".into(), ..Default::default() });
+        // Unknown keys are what older and newer versions leave, not damage.
+        assert!(!lenient(r#"{"somethingOld": 1}"#).1);
+    }
+
+    #[test]
+    fn a_file_that_isnt_json_is_reported() {
+        assert_eq!(lenient("{\"fps\": 14"), (Settings::default(), true));
+        assert_eq!(lenient("[]"), (Settings::default(), true));
     }
 
     #[test]

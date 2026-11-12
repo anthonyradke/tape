@@ -53,15 +53,23 @@ pub struct Shared {
 }
 
 impl Shared {
-    /// Reads the settings file; a missing or damaged one means defaults. True if this is the
+    /// Reads the settings file; a missing one means defaults, a damaged one keeps what still
+    /// reads and is copied to settings.json.bad before being written over. True if this is the
     /// first run.
     pub fn load(app: &AppHandle) -> (Shared, bool) {
         let dir = app.path().app_config_dir().unwrap_or_else(|_| PathBuf::from("."));
         let _ = fs::create_dir_all(&dir);
         let settings_path = dir.join("settings.json");
-        let text = fs::read_to_string(&settings_path).ok();
-        let first_run = text.is_none();
-        let settings: Settings = text.and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        let read = fs::read(&settings_path);
+        let first_run = matches!(&read, Err(e) if e.kind() == std::io::ErrorKind::NotFound);
+        let (settings, damaged) = match read.map(String::from_utf8) {
+            Ok(Ok(text)) => Settings::from_json_lenient(&text),
+            Ok(Err(_)) => (Settings::default(), true),
+            Err(_) => (Settings::default(), !first_run),
+        };
+        if damaged {
+            let _ = fs::copy(&settings_path, settings_path.with_extension("json.bad"));
+        }
         if settings.folder.is_empty() {
             tape_core::naming::rename_old_default_folder();
         }

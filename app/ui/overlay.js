@@ -95,7 +95,8 @@ document.addEventListener("click", (e) => {
   }
 });
 
-document.addEventListener("contextmenu", (e) => e.preventDefault());
+// The webview's own menu only in text fields, for Paste.
+document.addEventListener("contextmenu", (e) => e.target.matches?.("textarea, input:not([type=range])") || e.preventDefault());
 
 function escape() {
   if (!Gallery.escape()) hide();

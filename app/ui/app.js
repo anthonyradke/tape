@@ -309,7 +309,11 @@ document.addEventListener("click", async (e) => {
   }
 });
 
+// The webview's own menu is only kept where it helps: Paste and the like in text fields.
+const textField = (el) => el.matches?.("textarea, input:not([type=range]):not([type=checkbox])");
+
 document.addEventListener("contextmenu", (e) => {
+  if (textField(e.target)) return;
   const item = e.target.closest("[data-open],[data-play]");
   e.preventDefault();
   if (item) invoke("reveal_file", { path: item.dataset.open || item.dataset.play });

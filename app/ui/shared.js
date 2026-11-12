@@ -730,8 +730,8 @@ const Gallery = (() => {
         <div class="trim-keys">${ticks}</div>
         <div class="trim-sel" id="trim-sel"></div>
         <div class="trim-head" id="trim-head"></div>
-        <div class="trim-handle" id="trim-start" data-edge="start" role="slider" aria-label="Start" tabindex="0"></div>
-        <div class="trim-handle" id="trim-end" data-edge="end" role="slider" aria-label="End" tabindex="0"></div>
+        <div class="trim-handle" id="trim-start" data-edge="start" role="slider" aria-label="Start" title="Start. Arrow keys move it a keyframe at a time." tabindex="0"></div>
+        <div class="trim-handle" id="trim-end" data-edge="end" role="slider" aria-label="End" title="End. Arrow keys move it a tenth of a second, Shift for a whole second." tabindex="0"></div>
       </div>
       <div class="trim-row">
         <button class="btn sm press" data-player="trim-start" title="Start at the keyframe nearest before the playhead">Start here</button>
@@ -766,6 +766,14 @@ const Gallery = (() => {
     const pct = (t) => `${(t / trim.duration) * 100}%`;
     $("trim-start").style.left = pct(trim.start);
     $("trim-end").style.left = pct(trim.end);
+    // Screen readers hear the handles as sliders over the clip's length, in seconds.
+    for (const [id, value] of [["trim-start", trim.start], ["trim-end", trim.end]]) {
+      const handle = $(id);
+      handle.setAttribute("aria-valuemin", 0);
+      handle.setAttribute("aria-valuemax", trim.duration.toFixed(1));
+      handle.setAttribute("aria-valuenow", value.toFixed(1));
+      handle.setAttribute("aria-valuetext", fine(value));
+    }
     $("trim-sel").style.left = pct(trim.start);
     $("trim-sel").style.width = `${((trim.end - trim.start) / trim.duration) * 100}%`;
     const length = trim.end - trim.start;
@@ -817,10 +825,12 @@ const Gallery = (() => {
   document.addEventListener("pointerup", () => (dragging = null));
   document.addEventListener("keydown", (e) => {
     const handle = e.target.closest?.(".trim-handle");
-    if (!trim || !handle || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;
+    const steps = { ArrowLeft: -1, ArrowDown: -1, ArrowRight: 1, ArrowUp: 1 };
+    if (!trim || !handle || !(e.key in steps || e.key === "Home" || e.key === "End")) return;
     e.preventDefault();
     const edge = handle.dataset.edge;
-    const back = e.key === "ArrowLeft";
+    if (e.key === "Home" || e.key === "End") return setEdge(edge, e.key === "Home" ? 0 : trim.duration);
+    const back = steps[e.key] < 0;
     if (edge === "start") {
       // Keyframe by keyframe.
       const keys = trim.keyframes;

@@ -18,6 +18,10 @@ use super::gfx;
 const HUNDRED_NS: f64 = 10_000_000.0;
 /// 160 kb/s, one of the AAC encoder's four fixed rates.
 const AAC_BYTES_PER_SECOND: u32 = 20_000;
+/// Samples held back at the start while waiting for the other stream's first time. The reader
+/// interleaves by time, so it comes within a few, and holding decoded frames on the GPU for long
+/// could starve the decoder of surfaces.
+const START_HOLD: usize = 8;
 const AAC_LC_LEVEL_2: u32 = 0x29;
 
 pub struct Copied {
@@ -201,38 +205,17 @@ fn convert(input: &Path, output: &Path, mode: Mode, progress: &mut dyn FnMut(f64
         // Over 60 fps, frames are dropped onto a 60 fps grid rather than resampled.
         let period = (HUNDRED_NS * target.fps_den as f64 / target.fps_num as f64) as i64;
         let mut next_frame = None;
-        let mut base = None;
-        let (mut video_done, mut audio_done) = (false, out_audio.is_none());
         let mut shown = -1i64;
-        while !(video_done && audio_done) {
-            let (mut index, mut flags, mut time, mut sample) = (0u32, 0u32, 0i64, None);
-            reader
-                .ReadSample(MF_SOURCE_READER_ANY_STREAM.0 as u32, 0, Some(&mut index), Some(&mut flags), Some(&mut time), Some(&mut sample))
-                .map_err(|e| format!("decoding failed: {e}"))?;
-            let is_video = index == real_video;
-            if flags & MF_SOURCE_READERF_ENDOFSTREAM.0 as u32 != 0 {
-                if is_video {
-                    video_done = true;
-                } else {
-                    audio_done = true;
-                }
-                continue;
-            }
-            let out = match (is_video, out_audio) {
-                (true, _) => out_video,
-                (false, Some(audio)) => audio,
-                (false, None) => continue,
-            };
-            let at = (time - *base.get_or_insert(time)).max(0);
+        let mut write = |out: u32, is_video: bool, flags: u32, at: i64, sample: Option<IMFSample>| -> Result<(), String> {
             if flags & MF_SOURCE_READERF_STREAMTICK.0 as u32 != 0 {
                 writer.SendStreamTick(out, at).map_err(text)?;
             }
-            let Some(sample) = sample else { continue };
+            let Some(sample) = sample else { return Ok(()) };
             if is_video {
                 if target.drop_frames {
                     let next = next_frame.unwrap_or(at);
                     if at + period / 4 < next {
-                        continue;
+                        return Ok(());
                     }
                     // Back on the grid after a gap rather than catching up with a burst.
                     next_frame = Some(if at - next > period { at + period } else { next + period });
@@ -248,7 +231,54 @@ fn convert(input: &Path, output: &Path, mode: Mode, progress: &mut dyn FnMut(f64
                     progress((at as f64 / duration as f64).min(1.0));
                 }
             }
+            Ok(())
+        };
+        // The copy starts at zero from the earlier of the two streams' first samples, so neither
+        // has samples before the start (which would all land on zero) and they stay in sync.
+        let mut base = None;
+        let (mut first_video, mut first_audio) = (None, None);
+        let mut held = Vec::new();
+        let (mut video_done, mut audio_done) = (false, out_audio.is_none());
+        while !(video_done && audio_done) {
+            let (mut index, mut flags, mut time, mut sample) = (0u32, 0u32, 0i64, None);
+            reader
+                .ReadSample(MF_SOURCE_READER_ANY_STREAM.0 as u32, 0, Some(&mut index), Some(&mut flags), Some(&mut time), Some(&mut sample))
+                .map_err(|e| format!("decoding failed: {e}"))?;
+            let is_video = index == real_video;
+            let ended = flags & MF_SOURCE_READERF_ENDOFSTREAM.0 as u32 != 0;
+            if ended {
+                if is_video {
+                    video_done = true;
+                } else {
+                    audio_done = true;
+                }
+            }
+            let out = match (is_video, out_audio) {
+                _ if ended => None,
+                (true, _) => Some(out_video),
+                (false, Some(audio)) => Some(audio),
+                (false, None) => None,
+            };
+            if base.is_none() {
+                if let Some(out) = out {
+                    *(if is_video { &mut first_video } else { &mut first_audio }) = Some(time);
+                    held.push((out, is_video, flags, time, sample));
+                }
+                let both = first_video.is_some() && (first_audio.is_some() || out_audio.is_none());
+                if both || video_done || audio_done || held.len() >= START_HOLD {
+                    let start = first_video.into_iter().chain(first_audio).min().unwrap_or(0);
+                    base = Some(start);
+                    for (out, is_video, flags, time, sample) in held.drain(..) {
+                        write(out, is_video, flags, (time - start).max(0), sample)?;
+                    }
+                }
+                continue;
+            }
+            if let (Some(out), Some(start)) = (out, base) {
+                write(out, is_video, flags, (time - start).max(0), sample)?;
+            }
         }
+        drop(write);
         writer.Finalize().map_err(|e| format!("couldn't finish the copy: {e}"))?;
         drop(writer);
         // Index at the front, so the video starts playing before it has all downloaded. Done here

@@ -1,10 +1,12 @@
-//! Changing what's in the clips folder from the gallery: trimming, deleting, renaming and starring.
+//! Changing what's in the clips folder from the gallery: trimming, repairing, deleting, renaming and
+//! starring.
 //! Every path comes from the webview, so each is checked to be a video in the clips folder first.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use tape_core::mp4::repair;
 use tape_core::mp4::trim::{self, Info};
 use tape_core::naming;
 use tauri::{AppHandle, Emitter, Manager};
@@ -80,6 +82,29 @@ pub async fn trim_clip(app: AppHandle, path: String, start: f64, end: f64) -> Re
         }
         Err(e) => Err(format!("Couldn't trim: {e}.")),
     }
+}
+
+/// Finishes a recording a crash left unfinished, in place (see `mp4::repair`), so it can be trimmed
+/// and plays everywhere. Returns its length in seconds.
+#[tauri::command]
+pub async fn repair_clip(app: AppHandle, path: String) -> Result<f64, String> {
+    let file = check(&app, &path)?;
+    let old_key = clip_key(&file);
+    let thumb = thumbnail_of(&app, &file);
+    let target = file.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || repair::repair(&target)).await.map_err(|e| e.to_string())?;
+    let repaired = result.map_err(|e| format!("Couldn't repair it: {e}."))?;
+    // The key goes by size and time, which both changed: the thumbnail and any link follow it.
+    let new_key = clip_key(&file);
+    if let (Some((old, seconds)), Some(key)) = (thumb, &new_key) {
+        let shared = app.state::<Shared>();
+        let _ = std::fs::rename(old, shared.thumbnails.join(format!("{key}_{}.jpg", (seconds * 1000.0) as u64)));
+    }
+    if let (Some(old), Some(new)) = (old_key, new_key) {
+        crate::share::moved(&app, &old, &new);
+    }
+    let _ = app.emit("changed", ());
+    Ok(repaired.seconds)
 }
 
 /// To the Recycle Bin, so a slip can be undone from there.

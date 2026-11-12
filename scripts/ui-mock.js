@@ -52,7 +52,7 @@
     games: ["Call of Duty", "Counter-Strike 2", "Fortnite", "Grand Theft Auto V", "Lethal Company", "Minecraft"],
     clips: q.get("empty") ? [] : [
       clip("Counter-Strike 2", 12, 790e6), clip("Counter-Strike 2", 28, 760e6), clip("Fortnite", 95, 1.1e9),
-      clip("Minecraft", 1400, 4.1e9, "recording"), clip("Desktop", 1600, 712e6), clip("Lethal Company", 2800, 803e6),
+      { ...clip("Minecraft", 1400, 4.1e9, "recording"), unfinished: true }, clip("Desktop", 1600, 712e6), clip("Lethal Company", 2800, 803e6),
       clip("Lethal Company", 2830, 788e6), clip("Grand Theft Auto V", 4300, 790e6), clip("Fortnite", 5800, 760e6),
     ],
     autostart: true, overlayRunning: scene === "conflict", replayRam: 1.13e9, version: "0.2.0", logPath: "", selfTest: null, uiTest: false,
@@ -98,6 +98,12 @@
           Object.assign(view.clips.find((c) => c.key === args.key), { thumb, seconds: args.seconds });
           return thumb;
         }
+        if (cmd === "repair_clip") {
+          await new Promise((r) => setTimeout(r, 400));
+          view.clips.find((x) => x.path === args.path).unfinished = false;
+          return 20;
+        }
+        if (cmd === "clip_info" && view.clips.find((x) => x.path === args.path)?.unfinished) throw "Can't trim this file: this file was never finished, so it can't be trimmed.";
         if (cmd === "clip_info") return { duration: 20, keyframes: Array.from({ length: 10 }, (_, i) => i * 2) };
         if (cmd === "trim_clip") {
           const c = view.clips.find((x) => x.path === args.path);

@@ -555,3 +555,57 @@ fn an_unfinished_recording_is_refused() {
     // Ends before it begins.
     assert!(tape_core::mp4::trim::trim(&finished, &out, 3.0, 2.0).is_err());
 }
+
+/// A recording left by a crash is finished in place: every frame that reached the disk decodes
+/// exactly as in the recording that finished normally, audio keeps its place, and it trims.
+#[test]
+fn a_crashed_recording_is_repaired() {
+    if !have_ffmpeg() {
+        return;
+    }
+    use tape_core::mp4::repair::{repair, unfinished};
+    use tape_core::mp4::trim::{info, trim};
+    const LAG: i64 = 24_000;
+    let (tracks, packets) = stream(Codec::H264, 2, LAG);
+    let finished = tmp("repair-finished.mp4");
+    record(&finished, &tracks, &packets, true);
+    let path = tmp("repair-crash.mp4");
+    record(&path, &tracks, &packets, false);
+    assert!(unfinished(&path));
+    assert!(!unfinished(&finished));
+    let repaired = repair(&path).unwrap();
+    assert!((repaired.seconds - 4.0).abs() < 0.001, "{}", repaired.seconds);
+    assert_eq!(top_level_boxes(&path), ["ftyp", "free", "mdat", "moov"]);
+    assert!(!unfinished(&path));
+    decode_clean(&path);
+    let probed = probe(&path);
+    assert_eq!(frames_of(&probed, "video"), [240]);
+    assert_eq!(frames_of(&probed, "audio").len(), 2);
+    assert_eq!(stream_hashes(&path, 0), stream_hashes(&finished, 0)[..240]);
+    let at = first_pts(&path, "a:0");
+    assert!((at - 0.5).abs() < 0.03, "audio starts at {at}");
+
+    let i = info(&path).unwrap();
+    assert_eq!(i.keyframes, [0.0, 1.0, 2.0, 3.0]);
+    let out = tmp("repair-trimmed.mp4");
+    trim(&path, &out, 1.0, 3.0).unwrap();
+    decode_clean(&out);
+    assert_eq!(frames_of(&probe(&out), "video"), [120]);
+}
+
+/// Power lost in the middle of writing a fragment: the part of it that made it is dropped.
+#[test]
+fn a_repair_drops_a_fragment_cut_short() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let (tracks, packets) = stream(Codec::Hevc, 1, 0);
+    let path = tmp("repair-cut.mp4");
+    record(&path, &tracks, &packets, false);
+    let len = fs::metadata(&path).unwrap().len();
+    fs::OpenOptions::new().write(true).open(&path).unwrap().set_len(len - 5000).unwrap();
+    let repaired = tape_core::mp4::repair::repair(&path).unwrap();
+    assert!(repaired.dropped > 0);
+    decode_clean(&path);
+    assert_eq!(frames_of(&probe(&path), "video"), [120]);
+}

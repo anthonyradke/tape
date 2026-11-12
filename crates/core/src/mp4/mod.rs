@@ -8,6 +8,7 @@
 mod boxes;
 pub mod chapters;
 pub mod faststart;
+pub mod repair;
 pub mod trim;
 pub mod codec;
 mod writer;

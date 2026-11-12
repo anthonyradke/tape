@@ -23,26 +23,26 @@ const CHUNK_SECONDS: f64 = 0.5;
 /// A trim shorter than this is almost certainly a slip.
 pub const MIN_SECONDS: f64 = 0.5;
 
-fn invalid(what: &str) -> io::Error {
+pub(super) fn invalid(what: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.to_string())
 }
 
-fn be32(b: &[u8], at: usize) -> io::Result<u32> {
+pub(super) fn be32(b: &[u8], at: usize) -> io::Result<u32> {
     b.get(at..at + 4).map(|s| u32::from_be_bytes(s.try_into().unwrap())).ok_or_else(|| invalid("short box"))
 }
 
-fn be64(b: &[u8], at: usize) -> io::Result<u64> {
+pub(super) fn be64(b: &[u8], at: usize) -> io::Result<u64> {
     b.get(at..at + 8).map(|s| u64::from_be_bytes(s.try_into().unwrap())).ok_or_else(|| invalid("short box"))
 }
 
 /// One box inside a run of boxes: its type, the whole box, and its body.
-struct Child<'a> {
-    kind: [u8; 4],
-    whole: &'a [u8],
-    body: &'a [u8],
+pub(super) struct Child<'a> {
+    pub kind: [u8; 4],
+    pub whole: &'a [u8],
+    pub body: &'a [u8],
 }
 
-fn children(data: &[u8]) -> io::Result<Vec<Child<'_>>> {
+pub(super) fn children(data: &[u8]) -> io::Result<Vec<Child<'_>>> {
     let mut out = Vec::new();
     let mut at = 0;
     while at + 8 <= data.len() {
@@ -64,12 +64,12 @@ fn children(data: &[u8]) -> io::Result<Vec<Child<'_>>> {
     Ok(out)
 }
 
-fn find<'a>(list: &'a [Child<'a>], kind: &[u8; 4]) -> Option<&'a Child<'a>> {
+pub(super) fn find<'a>(list: &'a [Child<'a>], kind: &[u8; 4]) -> Option<&'a Child<'a>> {
     list.iter().find(|c| &c.kind == kind)
 }
 
 /// Version byte of a full box, and its body after version and flags.
-fn full_body<'a>(c: &Child<'a>) -> io::Result<(u8, &'a [u8])> {
+pub(super) fn full_body<'a>(c: &Child<'a>) -> io::Result<(u8, &'a [u8])> {
     if c.body.len() < 4 {
         return Err(invalid("short box"));
     }
@@ -77,26 +77,26 @@ fn full_body<'a>(c: &Child<'a>) -> io::Result<(u8, &'a [u8])> {
 }
 
 #[derive(Clone, Copy)]
-struct Sample {
-    offset: u64,
-    size: u32,
-    dts: i64,
-    duration: u32,
-    cts: i32,
-    key: bool,
+pub(super) struct Sample {
+    pub offset: u64,
+    pub size: u32,
+    pub dts: i64,
+    pub duration: u32,
+    pub cts: i32,
+    pub key: bool,
 }
 
-struct Track {
-    video: bool,
-    timescale: u32,
-    samples: Vec<Sample>,
-    has_ctts: bool,
-    ctts_version: u8,
-    has_stss: bool,
+pub(super) struct Track {
+    pub video: bool,
+    pub timescale: u32,
+    pub samples: Vec<Sample>,
+    pub has_ctts: bool,
+    pub ctts_version: u8,
+    pub has_stss: bool,
     /// Movie-timescale silence before the media starts, from empty edits.
-    empty: u64,
+    pub empty: u64,
     /// Media time shown at the start of the (first non-empty) edit.
-    media_time: i64,
+    pub media_time: i64,
 }
 
 impl Track {
@@ -105,11 +105,11 @@ impl Track {
     }
 }
 
-struct Movie {
-    ftyp: Option<Vec<u8>>,
-    moov: Vec<u8>,
-    timescale: u32,
-    tracks: Vec<Track>,
+pub(super) struct Movie {
+    pub ftyp: Option<Vec<u8>>,
+    pub moov: Vec<u8>,
+    pub timescale: u32,
+    pub tracks: Vec<Track>,
 }
 
 /// `file_len` bounds what the tables may claim: counts in them come from the file, and a few bytes
@@ -299,18 +299,18 @@ pub fn info(path: &Path) -> io::Result<Info> {
 }
 
 /// Which samples of a track the trimmed file keeps.
-struct Cut<'a> {
-    track: &'a Track,
+pub(super) struct Cut<'a> {
+    pub track: &'a Track,
     /// Original index of the box, so the right `trak` gets the right tables.
-    index: usize,
-    samples: &'a [Sample],
+    pub index: usize,
+    pub samples: &'a [Sample],
     /// New edit list: silence first (movie ticks), then media from this media time.
-    empty: u64,
-    media_time: i64,
+    pub empty: u64,
+    pub media_time: i64,
     /// Movie ticks the trimmed file lasts; nothing shows after this.
-    limit: u64,
+    pub limit: u64,
     /// File offsets of this track's chunks in the new file, with the number of samples in each.
-    chunks: Vec<(u64, u32)>,
+    pub chunks: Vec<(u64, u32)>,
 }
 
 impl Cut<'_> {
@@ -501,8 +501,9 @@ fn header_len(c: &Child) -> usize {
 }
 
 /// The original `moov` with new sample tables, durations and edit lists. Tracks left with nothing
-/// in range are dropped; every other box is copied as it was.
-fn new_moov(movie: &Movie, cuts: &[Cut], wide: bool) -> io::Result<Vec<u8>> {
+/// in range are dropped, and so is `mvex` (only a repaired recording has one); every other box is
+/// copied as it was.
+pub(super) fn new_moov(movie: &Movie, cuts: &[Cut], wide: bool) -> io::Result<Vec<u8>> {
     let ts = movie.timescale;
     let longest = cuts.iter().map(|c| c.presented(ts)).max().unwrap_or(0);
     let mut out = Vec::new();
@@ -519,6 +520,7 @@ fn new_moov(movie: &Movie, cuts: &[Cut], wide: bool) -> io::Result<Vec<u8>> {
                     }
                     track += 1;
                 }
+                b"mvex" => {}
                 _ => o.extend_from_slice(c.whole),
             }
         }

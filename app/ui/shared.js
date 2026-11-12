@@ -384,7 +384,7 @@ const Gallery = (() => {
   const card = (c) => `<button class="tile" data-play="${esc(c.path)}" title="${esc(c.name)}">
       <span class="thumb">${c.thumb ? `<img src="${esc(convertFileSrc(c.thumb))}" alt="" loading="lazy">` : ""}
         ${c.seconds != null ? `<span class="length">${clock(c.seconds)}</span>` : ""}
-        ${c.kind === "recording" ? `<span class="kind">Recording</span>` : ""}
+        ${c.unfinished ? `<span class="kind unfinished" title="Never finished, probably cut off by a crash. Open it to repair.">Unfinished</span>` : c.kind === "recording" ? `<span class="kind">Recording</span>` : ""}
         ${c.starred ? `<span class="star-badge" title="Starred">${STAR}</span>` : ""}
         ${linkBadge(c)}</span>
       <span class="title">${esc(customName(c) || c.game)}</span>
@@ -536,6 +536,9 @@ const Gallery = (() => {
     star.classList.toggle("on", !!clip.starred);
     star.title = clip.starred ? "Starred. Click to unstar." : "Star: keeps it under Starred";
     star.setAttribute("aria-pressed", !!clip.starred);
+    // An unfinished recording can't be trimmed until it's repaired.
+    $("player-trim-btn").hidden = !!clip.unfinished;
+    $("player-repair").hidden = !clip.unfinished;
     renderNav();
     renderShare();
   }
@@ -723,6 +726,37 @@ const Gallery = (() => {
     }
   }
 
+  // ---------- repair ----------
+
+  let repairing = false;
+
+  // Finishes a recording a crash left in fragments. The file is rewritten in place, so the player
+  // lets go of it first and picks up where it was afterwards.
+  async function repair() {
+    const clip = playing();
+    const button = $("player-repair");
+    if (!clip?.unfinished || repairing) return;
+    repairing = true;
+    button.disabled = true;
+    button.textContent = "Repairing…";
+    const v = video();
+    const at = v.currentTime;
+    release();
+    try {
+      await invoke("repair_clip", { path: clip.path });
+      await load();
+      play(clip.path, at);
+      toast("Repaired. It can be trimmed and shared like any other recording now.");
+    } catch (err) {
+      toast(String(err), true);
+      play(clip.path, at);
+    } finally {
+      repairing = false;
+      button.disabled = false;
+      button.textContent = "Repair";
+    }
+  }
+
   // ---------- trim ----------
 
   // While open: { path, keyframes, duration, start, end, saving }.
@@ -903,6 +937,7 @@ const Gallery = (() => {
         <button class="btn sm press" id="player-next" data-player="next">Older</button>
         <button class="btn sm ghost icon press star-btn" id="player-star" data-player="star" aria-label="Star">${STAR}</button>
         <button class="btn sm press" id="player-trim-btn" data-player="trim" title="Cut it down and save the result as a new clip"><svg viewBox="0 0 16 16"><circle cx="4" cy="4.5" r="2"/><circle cx="4" cy="11.5" r="2"/><path d="M5.6 5.6L13 12M5.6 10.4L13 4"/></svg>Trim</button>
+        <button class="btn sm press" id="player-repair" data-player="repair" hidden title="This recording was never finished, probably because tape or Windows stopped while it was recording. Repair finishes it in place, keeping everything that reached the disk.">Repair</button>
         <button class="btn sm pri press" id="player-share" data-player="share">Copy link</button>
         <div class="menu-wrap">
           <button class="btn sm ghost icon press" data-player="menu" title="More" aria-label="More"><svg viewBox="0 0 16 16"><circle cx="3.5" cy="8" r=".6"/><circle cx="8" cy="8" r=".6"/><circle cx="12.5" cy="8" r=".6"/></svg></button>
@@ -953,6 +988,7 @@ const Gallery = (() => {
       case "rename": return startRename();
       case "delete": return remove();
       case "trim": return openTrim();
+      case "repair": return repair();
       case "trim-start": return trim && setEdge("start", video().currentTime);
       case "trim-end": return trim && setEdge("end", video().currentTime);
       case "trim-cancel": return closeTrim();

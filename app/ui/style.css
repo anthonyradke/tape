@@ -253,6 +253,7 @@ body[data-tab="settings"] .page:not(#page-settings) { display: none; }
 }
 .length { right: 6px; bottom: 6px; }
 .kind { left: 6px; bottom: 6px; }
+.kind.unfinished { color: var(--warn); }
 .shared { right: 6px; top: 6px; color: #a5b4fc; }
 .tile .title { display: block; margin-top: 7px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tile .meta { display: block; color: var(--dim); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -280,6 +281,7 @@ body[data-tab="settings"] .page:not(#page-settings) { display: none; }
 .star-btn.on { color: var(--warn); }
 .star-btn.on svg { fill: currentColor; }
 #player-trim-btn.on { background: var(--active); color: var(--fg); }
+.player-bar .btn[hidden] { display: none; }
 .star-badge { position: absolute; left: 6px; top: 6px; display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 5px; background: rgba(0, 0, 0, .66); color: var(--warn); }
 .star-badge svg { width: 13px; height: 13px; fill: currentColor; }
 

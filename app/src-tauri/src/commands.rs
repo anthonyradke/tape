@@ -44,6 +44,8 @@ pub struct ClipFile {
     thumb: Option<String>,
     seconds: Option<f64>,
     starred: bool,
+    /// A recording left in the fragmented layout by a crash, which the player offers to repair.
+    unfinished: bool,
 }
 
 #[derive(Serialize)]
@@ -126,6 +128,7 @@ fn add_clips(dir: &Path, game: &str, known: &HashMap<String, (PathBuf, f64)>, cl
             seconds: thumb.map(|(_, s)| *s),
             path: path.display().to_string(),
             starred: false,
+            unfinished: false,
             game: game.to_string(),
             bytes: meta.len(),
             modified,
@@ -153,6 +156,8 @@ pub(crate) fn all_clips(app: &AppHandle) -> Vec<ClipFile> {
     clips.retain(|c| Some(&c.path) != writing.as_ref());
     for c in &mut clips {
         c.starred = stars.has(&c.path);
+        // Only recordings are ever written in fragments; clips go to disk in one piece.
+        c.unfinished = c.kind == "recording" && tape_core::mp4::repair::unfinished(Path::new(&c.path));
     }
     clips.sort_by_key(|c| std::cmp::Reverse(c.modified));
     clips

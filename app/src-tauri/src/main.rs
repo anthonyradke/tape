@@ -137,6 +137,7 @@ fn main() {
             share::copy_text,
             library::clip_info,
             library::trim_clip,
+            library::repair_clip,
             library::delete_clip,
             library::rename_clip,
             library::star_clip,

@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use serde::Serialize;
@@ -182,9 +183,25 @@ pub fn save_thumb(app: AppHandle, key: String, seconds: f64, jpeg: Vec<u8>) -> O
     Some(path.display().to_string())
 }
 
+/// Each look walks every process, and the view is asked for on every change.
+const OVERLAY_CHECK_EVERY: Duration = Duration::from_secs(30);
+
+fn overlay_running() -> bool {
+    static LAST: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
+    let mut last = LAST.lock().unwrap();
+    match *last {
+        Some((at, running)) if at.elapsed() < OVERLAY_CHECK_EVERY => running,
+        _ => {
+            let running = nvidia_overlay_running();
+            *last = Some((Instant::now(), running));
+            running
+        }
+    }
+}
+
 /// The NVIDIA overlay holds the same default keys, and its replay costs what tape is here to save.
 #[cfg(windows)]
-fn overlay_running() -> bool {
+fn nvidia_overlay_running() -> bool {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
@@ -209,7 +226,7 @@ fn overlay_running() -> bool {
 }
 
 #[cfg(not(windows))]
-fn overlay_running() -> bool {
+fn nvidia_overlay_running() -> bool {
     false
 }
 

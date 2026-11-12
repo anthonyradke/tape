@@ -200,8 +200,9 @@ impl<W: Write + Seek> Mp4Writer<W> {
     }
 
     /// Writes the final index. Leaves an ordinary MP4: the fragments become opaque bytes inside
-    /// one large `mdat` and the normal `moov` at the end points straight at the samples.
-    pub fn finish(mut self) -> io::Result<W> {
+    /// one large `mdat` and the normal `moov` at the end points straight at the samples. Returns
+    /// the file's final size, which includes the last fragment written here.
+    pub fn finish(mut self) -> io::Result<(W, u64)> {
         for t in &mut self.tracks {
             if let Some((_, key, data)) = t.held.take() {
                 t.fragment.push(Sample { duration: t.last_duration, key, data });
@@ -213,6 +214,7 @@ impl<W: Write + Seek> Mp4Writer<W> {
         let mut index = Vec::new();
         moov(&mut index, &tables, false);
         self.out.write_all(&index)?;
+        let size = self.pos + index.len() as u64;
 
         let mdat_size = self.pos - self.mdat_header_at;
         self.out.seek(SeekFrom::Start(self.mdat_header_at))?;
@@ -225,7 +227,7 @@ impl<W: Write + Seek> Mp4Writer<W> {
         self.out.seek(SeekFrom::Start(self.init_moov_at + 4))?;
         self.out.write_all(b"free")?;
         self.out.flush()?;
-        Ok(self.out)
+        Ok((self.out, size))
     }
 }
 

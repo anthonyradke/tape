@@ -61,11 +61,16 @@ impl Recorder {
                     }
                     b.store(writer.bytes(), Ordering::Relaxed);
                 }
-                let total = writer.bytes();
+                // Read after finishing: the last fragment is only written then, and a recording
+                // shorter than a fragment has nothing on disk before it.
+                let mut total = writer.bytes();
                 // After a write failure the index may not fit on the disk either, but the
                 // fragments already on disk stay playable, so nothing is lost by trying.
-                if let Err(e) = writer.finish() {
-                    error.get_or_insert(format!("couldn't finish {}: {e}", p.display()));
+                match writer.finish() {
+                    Ok((_, size)) => total = size,
+                    Err(e) => {
+                        error.get_or_insert(format!("couldn't finish {}: {e}", p.display()));
+                    }
                 }
                 Finished { path: p, bytes: total, error }
             })
@@ -111,5 +116,44 @@ impl Recorder {
             bytes: self.bytes(),
             error: Some("recording thread panicked".into()),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::packet::{AudioFormat, Codec, VideoFormat};
+
+    fn tracks() -> Tracks {
+        Tracks {
+            video: VideoFormat { codec: Codec::H264, width: 16, height: 16, fps: 60, config: vec![1, 0x64, 0, 0x1f, 0xff, 0xe0, 0] },
+            audio: vec![AudioFormat { name: "a".into(), asc: vec![0x11, 0x90] }],
+        }
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("tape-record-{}", std::process::id()));
+        dir.join(name)
+    }
+
+    #[test]
+    fn a_recording_shorter_than_a_fragment_reports_its_size() {
+        let path = scratch("short.mp4");
+        let t = tracks();
+        let recorder = Recorder::start(&path, &t).unwrap();
+        // 1.5 s: less than one fragment, so nothing but the header is on disk until finish.
+        for frame in 0..90 {
+            recorder.push(Packet { track: 0, pts: frame, key: frame == 0, data: Arc::new(vec![7; 1000]) });
+            if frame % 2 == 0 {
+                let pts = frame * 800;
+                recorder.push(Packet { track: 1, pts, key: true, data: Arc::new(vec![9; 100]) });
+            }
+        }
+        let finished = recorder.finish();
+        assert!(finished.error.is_none(), "{:?}", finished.error);
+        let on_disk = std::fs::metadata(&path).unwrap().len();
+        assert_eq!(finished.bytes, on_disk);
+        assert!(on_disk > 90 * 1000);
+        let _ = std::fs::remove_file(path);
     }
 }

@@ -8,8 +8,19 @@ pub enum ClipKind {
     Recording,
 }
 
-/// Names Windows won't accept for a file or folder, whatever the extension.
-const RESERVED: &[&str] = &["CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "LPT1", "LPT2", "LPT3"];
+/// Device names Windows won't accept for a file or folder, whatever the extension. The
+/// superscript digits count too.
+const RESERVED: &[&str] = &[
+    "CON", "PRN", "AUX", "NUL", "COM0", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "COM¹",
+    "COM²", "COM³", "LPT0", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9", "LPT¹", "LPT²", "LPT³",
+];
+
+/// Whether Windows reserves `name`: "nul", "COM5", and also "com5.txt" or "con .mp4", since the
+/// part before the first dot, less trailing spaces, is what it checks.
+fn is_reserved(name: &str) -> bool {
+    let base = name.split('.').next().unwrap_or_default().trim_end();
+    RESERVED.iter().any(|r| r.to_lowercase() == base.to_lowercase())
+}
 
 /// Videos\Tape in the user's profile.
 pub fn default_folder() -> PathBuf {
@@ -51,8 +62,9 @@ pub fn clean(title: &str) -> String {
 /// `clean`, keeping up to `max` characters.
 fn clean_to(title: &str, max: usize) -> String {
     let safe: String = title.chars().filter(|c| !c.is_control() && !r#"<>:"/\|?*"#.contains(*c)).take(max).collect();
-    let safe = safe.trim().trim_end_matches('.').trim();
-    if RESERVED.contains(&safe.to_uppercase().as_str()) {
+    // Windows drops trailing dots and spaces, in any mix, so none may end the name.
+    let safe = safe.trim_start().trim_end_matches(|c: char| c == '.' || c.is_whitespace());
+    if is_reserved(safe) {
         return String::new();
     }
     safe.to_string()
@@ -108,7 +120,7 @@ pub fn renamed_path(path: &Path, title: &str) -> Option<PathBuf> {
     let title = title.trim_end_matches(['.', ' ']);
     let lower = title.to_ascii_lowercase();
     let title = if lower.ends_with(".dvr") { title[..title.len() - 4].trim_end() } else { title };
-    if title.is_empty() || RESERVED.contains(&title.to_uppercase().as_str()) {
+    if title.is_empty() || is_reserved(title) {
         return None;
     }
     Some(path.with_file_name(format!("{title}{ending}")))
@@ -192,5 +204,21 @@ mod tests {
         assert_eq!(clean(" ?? ... "), "");
         assert_eq!(clean("nul"), "");
         assert_eq!(clean(&"x".repeat(300)).len(), 60);
+        assert_eq!(clean("abc. ."), "abc");
+        assert_eq!(clean("abc . . "), "abc");
+        assert_eq!(clean("a.b"), "a.b");
+    }
+
+    #[test]
+    fn every_reserved_device_name_is_refused() {
+        for name in ["COM0", "com5", "Com9", "LPT0", "lpt4", "COM¹", "lpt³", "con", "aux", "com5.txt", "nul.tar.gz", "con .mp4"] {
+            assert_eq!(clean(name), "", "{name}");
+        }
+        for name in ["COM10", "computer", "console", "nul2", "LPT"] {
+            assert_eq!(clean(name), name);
+        }
+        let clip = Path::new("/v/Tape/CS2/a.DVR.mp4");
+        assert!(renamed_path(clip, "COM5").is_none());
+        assert!(renamed_path(clip, "lpt1.txt").is_none());
     }
 }

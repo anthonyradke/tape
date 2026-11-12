@@ -410,7 +410,7 @@ mod tests {
         assert!(ring.audio_reached(end, 1));
         let first = ring.snapshot_until(60, end);
         ring.cut_to(end);
-        assert_eq!(first.iter().filter(|p| p.track == 0).last().unwrap().pts, 299, "no frame after the end");
+        assert_eq!(first.iter().rfind(|p| p.track == 0).unwrap().pts, 299, "no frame after the end");
 
         for frame in 305..330 {
             ring.push(Packet { track: 0, pts: frame, key: false, data: Arc::new(vec![0; 100]) }, &t);
@@ -419,7 +419,7 @@ mod tests {
         let second = ring.snapshot_until(60, ring.newest_video_us());
         assert_eq!(second[0].pts, 300, "the next clip starts on the keyframe after the end");
         // The sound of the two clips is one unbroken run of packets, ending and starting at 30 s.
-        let last = first.iter().filter(|p| p.track == 1).last().unwrap();
+        let last = first.iter().rfind(|p| p.track == 1).unwrap();
         let next = second.iter().find(|p| p.track == 1).unwrap();
         assert_eq!(next.pts, last.pts + 1024);
         assert!(last.micros(AUDIO_RATE) < 30_000_000 && next.micros(AUDIO_RATE) >= 30_000_000);

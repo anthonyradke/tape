@@ -152,12 +152,12 @@ impl Backend for Fake {
             }
             force_key |= ctx.sink.take_keyframe_request();
             // Jump to the next keyframe in the canned stream when one is asked for.
-            if force_key && index % self.gop != 0 {
+            if force_key && !index.is_multiple_of(self.gop) {
                 index += self.gop - index % self.gop;
             }
             force_key = false;
             let frame = &self.video[index % self.video.len()];
-            let key = index % self.gop == 0;
+            let key = index.is_multiple_of(self.gop);
             let parsed = parse_frame(Codec::H264, frame);
             if let Some(config) = parsed.config {
                 format.config = config;

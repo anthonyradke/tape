@@ -451,7 +451,7 @@ mod tests {
         let clip = sink.clip_until(10, end).unwrap();
         let video: Vec<i64> = clip.packets.iter().filter(|p| p.track == 0).map(|p| p.pts).collect();
         assert_eq!(video, (0..30).collect::<Vec<_>>());
-        let last_audio = clip.packets.iter().filter(|p| p.track == 1).last().unwrap();
+        let last_audio = clip.packets.iter().rfind(|p| p.track == 1).unwrap();
         assert!(last_audio.micros(48_000) < 3_000_000 && last_audio.micros(48_000) + 21_334 >= 3_000_000);
     }
 

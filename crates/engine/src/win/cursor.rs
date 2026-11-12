@@ -1,7 +1,7 @@
 //! Draws the mouse pointer onto a captured frame, since Desktop Duplication leaves it out.
 
 use tape_core::cursor::CursorImage;
-use windows::core::{s, PCSTR};
+use windows::core::{s, Interface, PCSTR};
 use windows::Win32::Foundation::{POINT, RECT};
 use windows::Win32::Graphics::Direct3D::Fxc::{D3DCompile, D3DCOMPILE_OPTIMIZATION_LEVEL3};
 use windows::Win32::Graphics::Direct3D::{ID3DBlob, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP};
@@ -69,6 +69,10 @@ pub struct Overlay {
     color: Option<Layer>,
     inverted: Option<Layer>,
     size: (u32, u32),
+    /// The view of the last texture drawn on. Capture draws on the same one every frame until
+    /// the image size changes, so this saves making a view per frame. Holding the texture keeps
+    /// its address from being reused by another.
+    target: Option<(ID3D11Texture2D, ID3D11RenderTargetView)>,
 }
 
 fn blend(gfx: &Gfx, source: D3D11_BLEND, dest: D3D11_BLEND) -> Result<ID3D11BlendState, String> {
@@ -126,6 +130,7 @@ impl Overlay {
             color: None,
             inverted: None,
             size: (0, 0),
+            target: None,
         })
     }
 
@@ -165,10 +170,24 @@ impl Overlay {
         self.size = (image.width, image.height);
     }
 
+    fn view_of(&mut self, gfx: &Gfx, target: &ID3D11Texture2D) -> Result<ID3D11RenderTargetView, String> {
+        if let Some((texture, view)) = &self.target {
+            if texture.as_raw() == target.as_raw() {
+                return Ok(view.clone());
+            }
+        }
+        let mut view = None;
+        unsafe { gfx.device.CreateRenderTargetView(target, None, Some(&mut view)) }.map_err(|e| e.to_string())?;
+        let view = view.ok_or("no render target view")?;
+        self.target = Some((target.clone(), view.clone()));
+        Ok(view)
+    }
+
     /// `at` is where the shape's top left goes, in desktop pixels. Duplication reports it that way
     /// already, so the hotspot isn't subtracted again. `turn` is how the desktop is turned from
     /// `frame`, the image being drawn on.
-    pub fn draw(&self, gfx: &Gfx, target: &ID3D11Texture2D, at: POINT, frame: (u32, u32), turn: Turn) -> Result<(), String> {
+    pub fn draw(&mut self, gfx: &Gfx, target: &ID3D11Texture2D, at: POINT, frame: (u32, u32), turn: Turn) -> Result<(), String> {
+        let rtv = self.view_of(gfx, target)?;
         let (Some(color), width, height) = (&self.color, frame.0 as f32, frame.1 as f32) else { return Ok(()) };
         let ndc_x = |x: i32| x as f32 / width * 2.0 - 1.0;
         let ndc_y = |y: i32| 1.0 - y as f32 / height * 2.0;
@@ -181,15 +200,13 @@ impl Overlay {
         }
         constants[4] = turn.quarters();
         let ctx = &gfx.context;
-        let mut rtv = None;
         unsafe {
-            gfx.device.CreateRenderTargetView(target, None, Some(&mut rtv)).map_err(|e| e.to_string())?;
             let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
             ctx.Map(&self.quad, 0, D3D11_MAP_WRITE_DISCARD, 0, Some(&mut mapped)).map_err(|e| e.to_string())?;
             std::ptr::copy_nonoverlapping(constants.as_ptr(), mapped.pData.cast::<u32>(), constants.len());
             ctx.Unmap(&self.quad, 0);
 
-            ctx.OMSetRenderTargets(Some(&[rtv.clone()]), None);
+            ctx.OMSetRenderTargets(Some(&[Some(rtv)]), None);
             ctx.RSSetViewports(Some(&[D3D11_VIEWPORT { Width: width, Height: height, MaxDepth: 1.0, ..Default::default() }]));
             ctx.RSSetScissorRects(Some(&[RECT { left: 0, top: 0, right: frame.0 as i32, bottom: frame.1 as i32 }]));
             ctx.IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);

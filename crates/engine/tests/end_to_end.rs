@@ -357,6 +357,26 @@ fn encoder_settings_changed_mid_recording_wait_for_it_to_end() {
 }
 
 #[test]
+fn toggling_replay_mid_recording_keeps_a_deferred_change() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut e = Engine::start("deferred-replay", &[]);
+    e.configure(json!({"fps": 60}));
+    e.send(json!({"cmd": "startRecording"}));
+    e.wait_status(10, "recording", |s| s["recordingSeconds"].as_f64().unwrap() >= 1.0);
+    e.configure(json!({"fps": 30}));
+    e.send(json!({"cmd": "setReplay", "on": false}));
+    e.wait_status(5, "replay off", |s| s["replayOn"] == false);
+    e.send(json!({"cmd": "setReplay", "on": true}));
+    e.wait_status(10, "replay on", |s| s["replayOn"] == true && s["recordingSeconds"].as_f64().unwrap() >= 3.0);
+    e.send(json!({"cmd": "stopRecording"}));
+    let event = e.wait(10, "saved", |ev| ev["evt"] == "saved");
+    assert_eq!(probe(&saved(&event))["streams"][0]["r_frame_rate"], "60/1");
+    e.wait_status(10, "new rate running", |s| s["video"]["running"] == true && (s["video"]["fps"].as_f64().unwrap() - 30.0).abs() < 5.0);
+}
+
+#[test]
 fn audio_device_loss_does_not_touch_video() {
     if !have_ffmpeg() {
         return;

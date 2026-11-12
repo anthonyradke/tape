@@ -510,7 +510,8 @@ pub fn run(backend: Arc<dyn Backend>, input: impl BufRead + Send + 'static, mut 
             Ok(Command::StartRecording) => engine.start_recording(),
             Ok(Command::StopRecording) => engine.stop_recording(),
             Ok(Command::SetReplay { on }) => {
-                let mut settings = engine.settings.clone();
+                // Start from a change still waiting for a recording to end, or it would be dropped.
+                let mut settings = engine.deferred.clone().unwrap_or_else(|| engine.settings.clone());
                 settings.replay = on;
                 engine.configure(settings);
             }

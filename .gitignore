@@ -7,3 +7,5 @@ gen/
 .env
 .env.*
 .wrangler/
+# The share server's upload key, if one is ever written next to the Worker.
+share/upload-key

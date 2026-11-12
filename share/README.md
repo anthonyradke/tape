@@ -20,13 +20,15 @@ npx wrangler r2 bucket create tape-clips
 npx wrangler r2 bucket lifecycle add tape-clips expire-clips c/ --expire-days 8
 npx wrangler r2 bucket lifecycle add tape-clips abort-uploads "" --abort-multipart-days 1
 npx wrangler deploy
-openssl rand -base64 33 | tr '+/' '-_' | tr -d '=\n' > upload-key
-npx wrangler secret put UPLOAD_KEY < upload-key
+key=$(openssl rand -base64 33 | tr '+/' '-_' | tr -d '=\n')
+printf %s "$key" | npx wrangler secret put UPLOAD_KEY
+echo "$key"
 ```
 
 `deploy` prints the Worker's address. In tape, open Settings > Sharing and enter that address as the share server and
-the contents of `upload-key` as the upload key. Keep the key private: anyone who has it can upload to and delete from
-the bucket. Running `secret put` again with a new key replaces it.
+the key printed last as the upload key. The key is only held in the shell variable, so it never lands in a file inside
+the repository; keep it in a password manager if it's needed again. Keep it private: anyone who has it can upload to
+and delete from the bucket. Running `secret put` again with a new key replaces it.
 
 If `LINK_DAYS` changes in `wrangler.toml`, set the `expire-clips` rule to one day more.
 

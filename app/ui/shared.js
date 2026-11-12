@@ -351,7 +351,9 @@ const Gallery = (() => {
   const STAR = `<svg viewBox="0 0 16 16"><path d="M8 1.8l1.85 3.86 4.2.53-3.08 2.92.78 4.17L8 11.25l-3.75 2.03.78-4.17L1.95 6.19l4.2-.53z"/></svg>`;
 
   let box = null;
-  let options = { rename: true };
+  // rename: the rename field needs a keyboard, which the overlay doesn't have over a game.
+  // browse: N/P and Up/Down move between clips.
+  let options = { rename: true, browse: true };
   let playerChanged = () => {};
   let clips = [];
   let game = "";
@@ -934,6 +936,60 @@ const Gallery = (() => {
     }
   }
 
+  // ---------- keys ----------
+
+  const FRAME = 1 / 60; // the player can't tell the frame rate; tape records 60 fps by default
+  const KEY_HELP = "Keys: Space play/pause · J/L back/forward 10 s · K pause · ←/→ 5 s · , and . one frame · I/O trim start/end · Delete (twice) moves to the Recycle Bin";
+
+  function seek(by) {
+    const v = video();
+    const end = Number.isFinite(v.duration) ? v.duration : Infinity;
+    v.currentTime = Math.max(0, Math.min(end, v.currentTime + by));
+  }
+
+  async function trimEdge(edge) {
+    if (!trim) await openTrim();
+    if (trim) setEdge(edge, video().currentTime);
+  }
+
+  function deleteKey() {
+    if ($("player-menu").hidden) openMenu();
+    remove();
+  }
+
+  // Only while the player is up, and never while typing or with a modifier held, which is
+  // someone else's shortcut. A focused trim handle keeps its arrow keys.
+  document.addEventListener("keydown", (e) => {
+    if (!isOpen() || e.ctrlKey || e.altKey || e.metaKey || e.defaultPrevented) return;
+    if (e.target.closest?.("input, textarea, select, [contenteditable]")) return;
+    if (e.target.closest?.(".trim-handle") && e.key.startsWith("Arrow")) return;
+    const v = video();
+    const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    const browse = options.browse && index() >= 0;
+    const actions = {
+      " ": () => (v.paused ? v.play().catch(() => {}) : v.pause()),
+      k: () => v.pause(),
+      j: () => seek(-10),
+      l: () => seek(10),
+      ArrowLeft: () => seek(-5),
+      ArrowRight: () => seek(5),
+      ",": () => (v.pause(), seek(-FRAME)),
+      ".": () => (v.pause(), seek(FRAME)),
+      i: () => trimEdge("start"),
+      o: () => trimEdge("end"),
+      Delete: deleteKey,
+      ...(browse ? { n: () => show(index() + 1), ArrowDown: () => show(index() + 1), p: () => show(index() - 1), ArrowUp: () => show(index() - 1) } : {}),
+    };
+    if (!(key in actions)) return;
+    e.preventDefault(); // or a focused button or the video's own controls act on it too
+    if (key !== "Delete") deleteArmed = 0;
+    actions[key]();
+  });
+  // A focused button clicks on Space's release.
+  document.addEventListener("keyup", (e) => {
+    if (isOpen() && e.key === " " && !e.target.closest?.("input, textarea, select")) e.preventDefault();
+  });
+
   function mount(element, onPlayer, opts) {
     box = element;
     if (onPlayer) playerChanged = onPlayer;
@@ -943,16 +999,17 @@ const Gallery = (() => {
     <div class="player" id="player" hidden role="dialog" aria-modal="true" aria-label="Player">
       <div class="player-bar">
         <div class="player-info" id="player-info"></div>
-        <button class="btn sm press" id="player-prev" data-player="prev">Newer</button>
-        <button class="btn sm press" id="player-next" data-player="next">Older</button>
+        <button class="btn sm press" id="player-prev" data-player="prev" ${options.browse ? `title="Newer (P)"` : ""}>Newer</button>
+        <button class="btn sm press" id="player-next" data-player="next" ${options.browse ? `title="Older (N)"` : ""}>Older</button>
         <button class="btn sm ghost icon press star-btn" id="player-star" data-player="star" aria-label="Star">${STAR}</button>
-        <button class="btn sm press" id="player-trim-btn" data-player="trim" title="Cut it down and save the result as a new clip"><svg viewBox="0 0 16 16"><circle cx="4" cy="4.5" r="2"/><circle cx="4" cy="11.5" r="2"/><path d="M5.6 5.6L13 12M5.6 10.4L13 4"/></svg>Trim</button>
+        <button class="btn sm press" id="player-trim-btn" data-player="trim" title="Cut it down and save the result as a new clip (I and O set the start and end)"><svg viewBox="0 0 16 16"><circle cx="4" cy="4.5" r="2"/><circle cx="4" cy="11.5" r="2"/><path d="M5.6 5.6L13 12M5.6 10.4L13 4"/></svg>Trim</button>
         <button class="btn sm press" id="player-repair" data-player="repair" hidden title="This recording was never finished, probably because tape or Windows stopped while it was recording. Repair finishes it in place, keeping everything that reached the disk.">Repair</button>
         <button class="btn sm pri press" id="player-share" data-player="share">Copy link</button>
         <div class="menu-wrap">
           <button class="btn sm ghost icon press" data-player="menu" title="More" aria-label="More"><svg viewBox="0 0 16 16"><circle cx="3.5" cy="8" r=".6"/><circle cx="8" cy="8" r=".6"/><circle cx="12.5" cy="8" r=".6"/></svg></button>
           <div class="menu" id="player-menu" hidden></div>
         </div>
+        <span class="keys-help" tabindex="0" role="note" title="${KEY_HELP}${options.browse ? " · N/P or ↓/↑ older/newer clip" : ""} · Esc closes" aria-label="Keyboard keys">?</span>
         <button class="btn sm ghost icon press" data-player="close" title="Close (Esc)" aria-label="Close"><svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
       </div>
       <video id="player-video" controls></video>

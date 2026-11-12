@@ -137,6 +137,6 @@ listen("overlay-shown", opened);
 listen("overlay-hidden", () => Gallery.stop());
 
 // No renaming here: typing would need the keyboard the game is holding.
-Gallery.mount($("gallery"), (open) => invoke("overlay_player", { open }), { rename: false });
+Gallery.mount($("gallery"), (open) => invoke("overlay_player", { open }), { rename: false, browse: false });
 Cloud.load(false);
 opened();

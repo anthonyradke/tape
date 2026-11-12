@@ -10,9 +10,17 @@ pub struct CursorImage {
     pub invert: Option<Vec<u8>>,
 }
 
+/// Whether `height` rows of `row_bytes` each, `pitch` apart, fit in `len` bytes. The shape comes
+/// from the driver, so nothing about it is taken on trust.
+fn fits(row_bytes: u64, height: u32, pitch: u32, len: usize) -> bool {
+    let total = (pitch as u64).checked_mul(height as u64);
+    pitch as u64 >= row_bytes && total.is_some_and(|t| t <= len as u64)
+}
+
 fn layers(width: u32, height: u32, mut pixel: impl FnMut(u32, u32) -> ([u8; 4], bool)) -> CursorImage {
-    let mut color = Vec::with_capacity((width * height * 4) as usize);
-    let mut invert = vec![0u8; (width * height * 4) as usize];
+    let size = width as usize * height as usize * 4;
+    let mut color = Vec::with_capacity(size);
+    let mut invert = vec![0u8; size];
     let mut any = false;
     for y in 0..height {
         for x in 0..width {
@@ -20,7 +28,7 @@ fn layers(width: u32, height: u32, mut pixel: impl FnMut(u32, u32) -> ([u8; 4], 
             color.extend_from_slice(&bgra);
             if inv {
                 any = true;
-                invert[((y * width + x) * 4) as usize..][..4].fill(255);
+                invert[(y as usize * width as usize + x as usize) * 4..][..4].fill(255);
             }
         }
     }
@@ -30,10 +38,10 @@ fn layers(width: u32, height: u32, mut pixel: impl FnMut(u32, u32) -> ([u8; 4], 
 /// Two 1-bit masks stacked vertically: AND on top, XOR below. `height` is the doubled height.
 pub fn monochrome(width: u32, height: u32, pitch: u32, data: &[u8]) -> Option<CursorImage> {
     let h = height / 2;
-    if (pitch * height) as usize > data.len() {
+    if !fits((width as u64).div_ceil(8), height, pitch, data.len()) {
         return None;
     }
-    let bit = |x: u32, y: u32| data[(y * pitch + x / 8) as usize] >> (7 - x % 8) & 1;
+    let bit = |x: u32, y: u32| data[y as usize * pitch as usize + x as usize / 8] >> (7 - x % 8) & 1;
     Some(layers(width, h, |x, y| match (bit(x, y), bit(x, y + h)) {
         (0, 0) => ([0, 0, 0, 255], false),
         (0, _) => ([255, 255, 255, 255], false),
@@ -43,12 +51,12 @@ pub fn monochrome(width: u32, height: u32, pitch: u32, data: &[u8]) -> Option<Cu
 }
 
 pub fn color(width: u32, height: u32, pitch: u32, data: &[u8]) -> Option<CursorImage> {
-    if (pitch * height) as usize > data.len() {
+    if !fits(width as u64 * 4, height, pitch, data.len()) {
         return None;
     }
-    let mut out = Vec::with_capacity((width * height * 4) as usize);
+    let mut out = Vec::with_capacity(width as usize * height as usize * 4);
     for y in 0..height {
-        let row = &data[(y * pitch) as usize..][..(width * 4) as usize];
+        let row = &data[y as usize * pitch as usize..][..width as usize * 4];
         out.extend_from_slice(row);
     }
     Some(CursorImage { width, height, color: out, invert: None })
@@ -58,11 +66,11 @@ pub fn color(width: u32, height: u32, pitch: u32, data: &[u8]) -> Option<CursorI
 /// equivalent, so any non-black XOR is drawn as a full invert, which is how these pointers look
 /// on most backgrounds.
 pub fn masked(width: u32, height: u32, pitch: u32, data: &[u8]) -> Option<CursorImage> {
-    if (pitch * height) as usize > data.len() {
+    if !fits(width as u64 * 4, height, pitch, data.len()) {
         return None;
     }
     Some(layers(width, height, |x, y| {
-        let p = &data[(y * pitch + x * 4) as usize..][..4];
+        let p = &data[y as usize * pitch as usize + x as usize * 4..][..4];
         if p[3] == 0 {
             ([p[0], p[1], p[2], 255], false)
         } else if p[0] | p[1] | p[2] != 0 {
@@ -116,5 +124,25 @@ mod tests {
         assert!(monochrome(8, 8, 1, &[0; 3]).is_none());
         assert!(color(8, 8, 32, &[0; 3]).is_none());
         assert!(masked(8, 8, 32, &[0; 3]).is_none());
+    }
+
+    #[test]
+    fn rows_narrower_than_the_image_are_rejected() {
+        // Pitch 4 with width 2 would read past the buffer on the last row.
+        assert!(color(2, 1, 4, &[0; 4]).is_none());
+        assert!(masked(2, 1, 4, &[0; 4]).is_none());
+        // 9 pixels wide needs 2 bytes per mask row.
+        assert!(monochrome(9, 2, 1, &[0; 2]).is_none());
+        assert!(monochrome(9, 2, 2, &[0; 4]).is_some());
+    }
+
+    #[test]
+    fn shapes_that_overflow_are_rejected() {
+        assert!(color(u32::MAX, 2, u32::MAX, &[0; 16]).is_none());
+        assert!(color(1, u32::MAX, 0x8000_0000, &[0; 16]).is_none());
+        assert!(masked(0x4000_0000, 1, 0, &[0; 16]).is_none());
+        assert!(monochrome(u32::MAX, u32::MAX, u32::MAX, &[0; 16]).is_none());
+        // Nothing to draw is fine.
+        assert_eq!(color(0, 0, 0, &[]).unwrap().color.len(), 0);
     }
 }

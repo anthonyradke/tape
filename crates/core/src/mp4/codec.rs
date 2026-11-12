@@ -270,7 +270,14 @@ fn av1c(obu: &[u8], body: &[u8]) -> Option<Vec<u8>> {
             // timing_info
             b.skip(64);
             if b.bit()? == 1 {
-                while b.bit()? == 0 {} // num_ticks_per_picture_minus_1, uvlc
+                // num_ticks_per_picture_minus_1, uvlc: leading zeros, a one, then that many bits.
+                let mut zeros = 0;
+                while b.bit()? == 0 {
+                    zeros += 1;
+                }
+                if zeros < 32 {
+                    b.skip(zeros);
+                }
             }
             decoder_model = b.bit()? == 1;
             if decoder_model {
@@ -350,6 +357,33 @@ mod tests {
     fn drops_av1_temporal_delimiter() {
         let data = [0x12, 0, 0x32, 2, 0xaa, 0xbb]; // TD, then a frame OBU
         assert_eq!(parse_frame(Codec::Av1, &data).sample, [0x32, 2, 0xaa, 0xbb]);
+    }
+
+    /// Packs "0101 1..." (spaces ignored) into bytes, padding the last with zeros.
+    fn packed(bits: &str) -> Vec<u8> {
+        let bits: Vec<u8> = bits.bytes().filter(|b| *b != b' ').map(|b| b - b'0').collect();
+        bits.chunks(8).map(|c| c.iter().enumerate().fold(0, |byte, (i, b)| byte | b << (7 - i))).collect()
+    }
+
+    #[test]
+    fn av1_level_and_tier_after_timing_info() {
+        let body = packed(concat!(
+            "000 0 0",  // profile 0, not a still picture, full header
+            "1",        // timing_info_present_flag
+            "00000000000000000000000000000001", // num_units_in_display_tick
+            "00000000000000000000000000111100", // time_scale
+            "1 010",    // equal_picture_interval, num_ticks_per_picture_minus_1 = 1 as uvlc
+            "0 0",      // no decoder model, no initial display delay
+            "00000",    // one operating point
+            "000000000000", // operating_point_idc
+            "01000 1",  // seq_level_idx 8 (level 4.0), tier 1
+            "0000000",
+        ));
+        let mut obu = vec![0x0a, body.len() as u8];
+        obu.extend_from_slice(&body);
+        let config = parse_frame(Codec::Av1, &obu).config.unwrap();
+        assert_eq!(&config[..4], [0x81, 0x08, 0x8c, 0]);
+        assert_eq!(&config[4..], obu);
     }
 
     #[test]

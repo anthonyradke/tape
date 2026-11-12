@@ -9,14 +9,18 @@ use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
 
 use super::gfx::Gfx;
+use crate::rotation::Turn;
 
 const SHADER: &str = r#"
-cbuffer Quad : register(b0) { float4 rect; };
+cbuffer Quad : register(b0) { float4 rect; uint4 turn; };
 struct V { float4 position : SV_Position; float2 uv : TEXCOORD0; };
 V vs(uint id : SV_VertexID) {
     V o;
-    o.uv = float2(id & 1, id >> 1);
-    o.position = float4(lerp(rect.x, rect.z, o.uv.x), lerp(rect.y, rect.w, o.uv.y), 0, 1);
+    float2 c = float2(id & 1, id >> 1);
+    o.position = float4(lerp(rect.x, rect.z, c.x), lerp(rect.y, rect.w, c.y), 0, 1);
+    // The shape is upright on the desktop; on a rotated monitor's image it's turned back.
+    // Matches shape_uv in rotation.rs.
+    o.uv = turn.x == 1 ? float2(1 - c.y, c.x) : turn.x == 2 ? 1 - c : turn.x == 3 ? float2(c.y, 1 - c.x) : c;
     return o;
 }
 Texture2D image : register(t0);
@@ -102,7 +106,7 @@ impl Overlay {
             };
             gfx.device.CreateSamplerState(&desc, Some(&mut sampler)).map_err(text)?;
             let desc = D3D11_BUFFER_DESC {
-                ByteWidth: 16,
+                ByteWidth: 32,
                 Usage: D3D11_USAGE_DYNAMIC,
                 BindFlags: D3D11_BIND_CONSTANT_BUFFER.0 as u32,
                 CPUAccessFlags: D3D11_CPU_ACCESS_WRITE.0 as u32,
@@ -161,25 +165,28 @@ impl Overlay {
         self.size = (image.width, image.height);
     }
 
-    /// `at` is where the shape's top left goes, in frame pixels. Duplication reports it that way
-    /// already, so the hotspot isn't subtracted again.
-    pub fn draw(&self, gfx: &Gfx, target: &ID3D11Texture2D, at: POINT, frame: (u32, u32)) -> Result<(), String> {
+    /// `at` is where the shape's top left goes, in desktop pixels. Duplication reports it that way
+    /// already, so the hotspot isn't subtracted again. `turn` is how the desktop is turned from
+    /// `frame`, the image being drawn on.
+    pub fn draw(&self, gfx: &Gfx, target: &ID3D11Texture2D, at: POINT, frame: (u32, u32), turn: Turn) -> Result<(), String> {
         let (Some(color), width, height) = (&self.color, frame.0 as f32, frame.1 as f32) else { return Ok(()) };
-        let ndc_x = |x: f32| x / width * 2.0 - 1.0;
-        let ndc_y = |y: f32| 1.0 - y / height * 2.0;
-        let rect = [
-            ndc_x(at.x as f32),
-            ndc_y(at.y as f32),
-            ndc_x((at.x + self.size.0 as i32) as f32),
-            ndc_y((at.y + self.size.1 as i32) as f32),
-        ];
+        let ndc_x = |x: i32| x as f32 / width * 2.0 - 1.0;
+        let ndc_y = |y: i32| 1.0 - y as f32 / height * 2.0;
+        let (left, top, right, bottom) = turn.desktop_rect_in_image((at.x, at.y), self.size, frame);
+        let rect = [ndc_x(left), ndc_y(top), ndc_x(right), ndc_y(bottom)];
+        // The constant buffer: the rectangle, then the quarter turns padded to 16 bytes.
+        let mut constants = [0u32; 8];
+        for (slot, value) in constants.iter_mut().zip(rect) {
+            *slot = value.to_bits();
+        }
+        constants[4] = turn.quarters();
         let ctx = &gfx.context;
         let mut rtv = None;
         unsafe {
             gfx.device.CreateRenderTargetView(target, None, Some(&mut rtv)).map_err(|e| e.to_string())?;
             let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
             ctx.Map(&self.quad, 0, D3D11_MAP_WRITE_DISCARD, 0, Some(&mut mapped)).map_err(|e| e.to_string())?;
-            std::ptr::copy_nonoverlapping(rect.as_ptr(), mapped.pData.cast::<f32>(), 4);
+            std::ptr::copy_nonoverlapping(constants.as_ptr(), mapped.pData.cast::<u32>(), constants.len());
             ctx.Unmap(&self.quad, 0);
 
             ctx.OMSetRenderTargets(Some(&[rtv.clone()]), None);

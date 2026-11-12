@@ -154,8 +154,8 @@ pub fn run(settings: &Settings, ctx: &VideoContext) -> Result<(), String> {
 
         let began = ctx.clock.now_us();
         if changed || !has_image {
-            if let Some(source) = capture.as_mut().and_then(|c| c.frame()) {
-                converter.convert(&source)?;
+            if let Some((source, turn)) = capture.as_mut().and_then(|c| c.frame().map(|f| (f, c.turn()))) {
+                converter.convert(&source, turn)?;
                 has_image = true;
                 changed = false;
             }

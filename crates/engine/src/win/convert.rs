@@ -10,6 +10,8 @@ use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 
 use super::gfx::Gfx;
+use crate::log;
+use crate::rotation::Turn;
 
 pub struct Converter {
     gfx: Gfx,
@@ -22,6 +24,7 @@ pub struct Converter {
     width: u32,
     height: u32,
     source_size: (u32, u32),
+    turn: Turn,
     /// Views by texture, since capture alternates between two.
     inputs: Vec<(ID3D11Texture2D, ID3D11VideoProcessorInputView)>,
 }
@@ -35,7 +38,7 @@ fn fit(src: (u32, u32), dst: (u32, u32)) -> RECT {
     let (sw, sh, dw, dh) = (src.0 as u64, src.1 as u64, dst.0 as u64, dst.1 as u64);
     let (w, h) = if sw * dh > dw * sh { (dw, dw * sh / sw) } else { (dh * sw / sh, dh) };
     let (w, h) = (w as i32 & !1, h as i32 & !1);
-    let (x, y) = ((dst.0 as i32 - w) / 2 & !1, (dst.1 as i32 - h) / 2 & !1);
+    let (x, y) = (((dst.0 as i32 - w) / 2) & !1, ((dst.1 as i32 - h) / 2) & !1);
     RECT { left: x, top: y, right: x + w, bottom: y + h }
 }
 
@@ -66,6 +69,7 @@ impl Converter {
             width,
             height,
             source_size: (0, 0),
+            turn: Turn::None,
             inputs: Vec::new(),
         })
     }
@@ -74,11 +78,12 @@ impl Converter {
         &self.target
     }
 
-    fn prepare(&mut self, src: (u32, u32)) -> Result<(), String> {
-        if self.processor.is_some() && self.source_size == src {
+    fn prepare(&mut self, src: (u32, u32), turn: Turn) -> Result<(), String> {
+        if self.processor.is_some() && self.source_size == src && self.turn == turn {
             return Ok(());
         }
         self.source_size = src;
+        self.turn = turn;
         self.inputs.clear();
         let content = D3D11_VIDEO_PROCESSOR_CONTENT_DESC {
             InputFrameFormat: D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
@@ -102,7 +107,8 @@ impl Converter {
             self.output = view;
 
             let c = &self.context;
-            let dest = fit(src, (self.width, self.height));
+            // The destination is laid out for the image as the desktop has it, turned.
+            let dest = fit(turn.desktop_size(src), (self.width, self.height));
             let source = RECT { left: 0, top: 0, right: src.0 as i32, bottom: src.1 as i32 };
             c.VideoProcessorSetStreamFrameFormat(&processor, 0, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE);
             c.VideoProcessorSetStreamOutputRate(&processor, 0, D3D11_VIDEO_PROCESSOR_OUTPUT_RATE_NORMAL, false, None);
@@ -116,6 +122,24 @@ impl Converter {
                 Anonymous: D3D11_VIDEO_COLOR_0 { YCbCr: D3D11_VIDEO_COLOR_YCbCrA { Y: 0.0625, Cb: 0.5, Cr: 0.5, A: 1.0 } },
             };
             c.VideoProcessorSetOutputBackgroundColor(&processor, true, &black);
+            if turn != Turn::None {
+                let mut caps = D3D11_VIDEO_PROCESSOR_CAPS::default();
+                let can_rotate = enumerator.GetVideoProcessorCaps(&mut caps).is_ok()
+                    && caps.FeatureCaps & D3D11_VIDEO_PROCESSOR_FEATURE_CAPS_ROTATION.0 as u32 != 0;
+                if can_rotate {
+                    let rotation = match turn {
+                        Turn::Cw90 => D3D11_VIDEO_PROCESSOR_ROTATION_90,
+                        Turn::Cw180 => D3D11_VIDEO_PROCESSOR_ROTATION_180,
+                        _ => D3D11_VIDEO_PROCESSOR_ROTATION_270,
+                    };
+                    c.VideoProcessorSetStreamRotation(&processor, 0, true, rotation);
+                } else {
+                    // Sideways beats nothing: the picture is still all there.
+                    log!("video processor can't rotate, the {} degree monitor will be recorded sideways", turn.degrees());
+                    let dest = fit(src, (self.width, self.height));
+                    c.VideoProcessorSetStreamDestRect(&processor, 0, true, Some(&dest));
+                }
+            }
             self.enumerator = Some(enumerator);
             self.processor = Some(processor);
         }
@@ -141,10 +165,11 @@ impl Converter {
         Ok(view)
     }
 
-    pub fn convert(&mut self, source: &ID3D11Texture2D) -> Result<(), String> {
+    /// `turn`: how the desktop is turned from `source`, undone here.
+    pub fn convert(&mut self, source: &ID3D11Texture2D, turn: Turn) -> Result<(), String> {
         let mut desc = D3D11_TEXTURE2D_DESC::default();
         unsafe { source.GetDesc(&mut desc) };
-        self.prepare((desc.Width, desc.Height))?;
+        self.prepare((desc.Width, desc.Height), turn)?;
         let view = self.input(source)?;
         let stream = D3D11_VIDEO_PROCESSOR_STREAM {
             Enable: true.into(),

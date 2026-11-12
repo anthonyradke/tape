@@ -104,7 +104,7 @@ fn check_capture(out: &mut String, output: &OutputInfo, graphics: bool) {
         let (width, height) = (output.width & !1, output.height & !1);
         let converted = match Converter::new(&gfx, width, height) {
             Ok(mut converter) => {
-                converter.convert(&frame)?;
+                converter.convert(&frame, capture.turn())?;
                 format!("converted {}", image_stats(&gfx, converter.target())?)
             }
             Err(e) => format!("not converted, {e}"),

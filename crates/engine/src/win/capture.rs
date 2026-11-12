@@ -16,7 +16,10 @@ use windows::Graphics::DirectX::DirectXPixelFormat;
 use windows::Graphics::SizeInt32;
 use windows::Win32::Foundation::{E_ACCESSDENIED, POINT};
 use windows::Win32::Graphics::Direct3D11::*;
-use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
+use windows::Win32::Graphics::Dxgi::Common::{
+    DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_MODE_ROTATION_ROTATE180, DXGI_MODE_ROTATION_ROTATE270, DXGI_MODE_ROTATION_ROTATE90,
+    DXGI_SAMPLE_DESC,
+};
 use windows::Win32::Graphics::Dxgi::*;
 use windows::Win32::System::WinRT::Direct3D11::{CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess};
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
@@ -24,6 +27,7 @@ use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemIntero
 use super::cursor::Overlay;
 use super::gfx::{Gfx, OutputInfo};
 use crate::log;
+use crate::rotation::Turn;
 
 pub enum CaptureError {
     /// Normal while a UAC prompt or the lock screen is up, the monitor is off or the session is
@@ -47,6 +51,10 @@ pub trait Capture {
     /// The current image, ready for conversion.
     fn frame(&mut self) -> Option<ID3D11Texture2D>;
     fn method(&self) -> &'static str;
+    /// How the desktop is turned from the image `frame` gives, which the converter undoes.
+    fn turn(&self) -> Turn {
+        Turn::None
+    }
 }
 
 /// The latest desktop image, in a texture we own so the source can be released right away.
@@ -97,6 +105,7 @@ pub struct Duplication {
     pointer_at: POINT,
     pointer_visible: bool,
     shape: Vec<u8>,
+    turn: Turn,
 }
 
 impl Duplication {
@@ -121,6 +130,16 @@ impl Duplication {
                 CaptureError::Refused(format!("Desktop Duplication: {e}"))
             }
         })?;
+        // A monitor turned to portrait is captured as its panel scans out, landscape, so the
+        // converter turns the image and the pointer is placed the same way.
+        let rotation = unsafe { duplication.GetDesc() }.Rotation;
+        let turn = match rotation {
+            DXGI_MODE_ROTATION_ROTATE90 => Turn::Cw90,
+            DXGI_MODE_ROTATION_ROTATE180 => Turn::Cw180,
+            DXGI_MODE_ROTATION_ROTATE270 => Turn::Cw270,
+            _ => Turn::None,
+        };
+        log!("capture: {} {}x{}, rotated {} degrees", output.id, output.width, output.height, turn.degrees());
         let overlay = if show_cursor {
             // Capture is worth having without a pointer, so this doesn't stop anything.
             Overlay::new(gfx).map_err(|e| log!("pointer overlay: {e}")).ok()
@@ -136,6 +155,7 @@ impl Duplication {
             pointer_at: POINT::default(),
             pointer_visible: false,
             shape: Vec::new(),
+            turn,
         })
     }
 
@@ -209,7 +229,7 @@ impl Capture for Duplication {
         }
         let target = self.composed.texture.clone()?;
         let size = (self.store.desc.Width, self.store.desc.Height);
-        match overlay.draw(&self.gfx, &target, self.pointer_at, size) {
+        match overlay.draw(&self.gfx, &target, self.pointer_at, size, self.turn) {
             Ok(()) => Some(target),
             Err(_) => Some(source),
         }
@@ -217,6 +237,10 @@ impl Capture for Duplication {
 
     fn method(&self) -> &'static str {
         "Desktop Duplication"
+    }
+
+    fn turn(&self) -> Turn {
+        self.turn
     }
 }
 

@@ -91,10 +91,20 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
 
 /// Brings the icon, tooltip and menu up to date. Cheap when nothing changed.
 pub fn refresh(app: &AppHandle) {
+    // Before anything is remembered as shown: this runs once before the tray exists.
+    let Some(tray) = app.tray_by_id(TRAY_ID) else { return };
     let shared = app.state::<Shared>();
-    let health = shared.health.lock().unwrap().clone();
+    let mut health = shared.health.lock().unwrap().clone();
     let wanted = shared.recording_wanted.load(Ordering::Relaxed);
-    let replay = shared.settings.lock().unwrap().replay;
+    let (replay, save_key) = {
+        let settings = shared.settings.lock().unwrap();
+        (settings.replay, settings.hotkeys.save_clip.clone())
+    };
+    // Replay running with no key to save it is the quiet failure this whole app is against.
+    if !save_key.is_empty() && shared.hotkey_errors.lock().unwrap().contains(&save_key) && health.problem.is_none() {
+        health.light = Light::Trouble;
+        health.problem = Some(format!("{save_key} is taken by another app, so it can't save clips"));
+    }
     let now = (health.light, wanted, replay, health.problem.clone(), update::status(app).available);
     {
         let mut shown = SHOWN.lock().unwrap();
@@ -103,7 +113,6 @@ pub fn refresh(app: &AppHandle) {
         }
         *shown = Some(now);
     }
-    let Some(tray) = app.tray_by_id(TRAY_ID) else { return };
     let _ = tray.set_icon(icon(health.light).ok());
     let tooltip = match (&health.problem, health.light) {
         (Some(problem), _) => format!("tape: {problem}"),

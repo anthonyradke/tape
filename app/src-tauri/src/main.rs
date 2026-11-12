@@ -82,9 +82,10 @@ fn main() {
                 // Replay is only useful if it's already running when something happens.
                 let _ = app.autolaunch().enable();
             }
-            hotkeys::register(handle);
             update::init(handle);
             tray::create(handle)?;
+            hotkeys::register(handle);
+            hotkeys::start_retrying(handle);
             supervisor::start(handle.clone());
             if !start_hidden {
                 show_window(handle);
@@ -94,7 +95,7 @@ fn main() {
         .on_window_event(|window, event| {
             // A key capture left running when the window went away would keep every hotkey off.
             if window.label() == "main" && matches!(event, WindowEvent::Focused(false) | WindowEvent::Destroyed) {
-                // Off this callback: registering goes through the main thread's event handling.
+                // Queued for after this callback rather than run inside it.
                 let app = window.app_handle().clone();
                 std::thread::spawn(move || hotkeys::resume_if_paused(&app));
             }

@@ -207,6 +207,7 @@ fn overlay_running() -> bool {
 
 #[tauri::command]
 pub fn view(app: AppHandle) -> View {
+    hotkeys::retry(&app);
     let shared = app.state::<Shared>();
     let settings = shared.settings.lock().unwrap().clone();
     let folder = shared.folder();

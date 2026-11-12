@@ -9,7 +9,7 @@ use tauri::plugin::TauriPlugin;
 use tauri::{AppHandle, Emitter, Manager, Wry};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
-use crate::{commands, overlay};
+use crate::{commands, overlay, tray};
 use crate::state::Shared;
 
 #[derive(Clone, Copy)]
@@ -27,6 +27,8 @@ static PAUSED: AtomicU64 = AtomicU64::new(0);
 static PAUSES: AtomicU64 = AtomicU64::new(0);
 /// A key capture nobody finished (the window closed or a game took focus) gives the keys back after this.
 const PAUSE_LIMIT: Duration = Duration::from_secs(30);
+/// How often keys another app held get tried again: it may have let go (the NVIDIA overlay turned off).
+const RETRY_EVERY: Duration = Duration::from_secs(30);
 
 pub fn plugin() -> TauriPlugin<Wry> {
     tauri_plugin_global_shortcut::Builder::new()
@@ -49,8 +51,18 @@ pub fn plugin() -> TauriPlugin<Wry> {
         .build()
 }
 
+fn wanted(keys: &Hotkeys) -> [(&String, Action); 4] {
+    [
+        (&keys.save_clip, Action::SaveClip),
+        (&keys.toggle_recording, Action::ToggleRecording),
+        (&keys.toggle_replay, Action::ToggleReplay),
+        (&keys.overlay, Action::Overlay),
+    ]
+}
+
 /// Re-registers everything from the settings. A key that's taken (the NVIDIA overlay still
-/// holding Alt+F10, say) goes in the errors list for the UI rather than failing silently.
+/// holding Alt+F10, say) goes in the errors list for the UI rather than failing silently, and
+/// `retry` keeps trying it.
 pub fn register(app: &AppHandle) {
     PAUSED.store(0, Ordering::Relaxed);
     let shared = app.state::<Shared>();
@@ -59,13 +71,7 @@ pub fn register(app: &AppHandle) {
     let _ = manager.unregister_all();
     let mut bindings = Vec::new();
     let mut errors = Vec::new();
-    let wanted = [
-        (&keys.save_clip, Action::SaveClip),
-        (&keys.toggle_recording, Action::ToggleRecording),
-        (&keys.toggle_replay, Action::ToggleReplay),
-        (&keys.overlay, Action::Overlay),
-    ];
-    for (text, action) in wanted {
+    for (text, action) in wanted(&keys) {
         if text.is_empty() {
             continue;
         }
@@ -82,6 +88,45 @@ pub fn register(app: &AppHandle) {
     if overlay::is_open(app) {
         grab_escape(app, true);
     }
+    tray::refresh(app);
+}
+
+/// Tries the keys that were taken again, leaving the ones that work alone. Runs on the main thread
+/// (from a sync command, or sent there by `start_retrying`), like every other change to the keys,
+/// so two can't interleave.
+pub fn retry(app: &AppHandle) {
+    let shared = app.state::<Shared>();
+    let failed = shared.hotkey_errors.lock().unwrap().clone();
+    if failed.is_empty() || PAUSED.load(Ordering::Relaxed) != 0 {
+        return;
+    }
+    let keys: Hotkeys = shared.settings.lock().unwrap().hotkeys.clone();
+    let manager = app.global_shortcut();
+    let mut still = Vec::new();
+    for text in &failed {
+        let action = wanted(&keys).into_iter().find(|(t, _)| *t == text).map(|(_, a)| a);
+        match (action, text.parse::<Shortcut>()) {
+            // Two actions on the same key: the first one has it, and the second stays an error.
+            (Some(action), Ok(shortcut)) if !manager.is_registered(shortcut) && manager.register(shortcut).is_ok() => {
+                BINDINGS.lock().unwrap().push((shortcut.id(), action));
+            }
+            _ => still.push(text.clone()),
+        }
+    }
+    if still != failed {
+        *shared.hotkey_errors.lock().unwrap() = still;
+        tray::refresh(app);
+        let _ = app.emit("changed", ());
+    }
+}
+
+pub fn start_retrying(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(RETRY_EVERY);
+        let handle = app.clone();
+        let _ = app.run_on_main_thread(move || retry(&handle));
+    });
 }
 
 /// The overlay doesn't take focus from the game, so Esc only reaches it like this. Held only
@@ -110,13 +155,15 @@ pub fn pause(app: &AppHandle) {
     std::thread::spawn(move || {
         std::thread::sleep(PAUSE_LIMIT);
         if PAUSED.load(Ordering::Relaxed) == pause {
-            register(&app);
+            let handle = app.clone();
+            let _ = app.run_on_main_thread(move || register(&handle));
         }
     });
 }
 
 pub fn resume_if_paused(app: &AppHandle) {
     if PAUSED.load(Ordering::Relaxed) != 0 {
-        register(app);
+        let handle = app.clone();
+        let _ = app.run_on_main_thread(move || register(&handle));
     }
 }

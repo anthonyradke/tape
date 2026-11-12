@@ -63,9 +63,11 @@ pub fn unique(path: &Path) -> PathBuf {
     if !path.exists() {
         return path.to_path_buf();
     }
-    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    // The number goes before the whole ending, so a clip stays a ".DVR.mp4".
+    let name = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let (stem, ending) = split_name(&name);
     (2..)
-        .map(|n| path.with_file_name(format!("{stem} ({n}).mp4")))
+        .map(|n| path.with_file_name(format!("{stem} ({n}){ending}")))
         .find(|p| !p.exists())
         .unwrap()
 }
@@ -143,7 +145,12 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let taken = dir.join("a.DVR.mp4");
         std::fs::write(&taken, b"x").unwrap();
-        assert_eq!(unique(&taken), dir.join("a.DVR (2).mp4"));
+        assert_eq!(unique(&taken), dir.join("a (2).DVR.mp4"));
+        std::fs::write(dir.join("a (2).DVR.mp4"), b"x").unwrap();
+        assert_eq!(unique(&taken), dir.join("a (3).DVR.mp4"));
+        let recording = dir.join("b.mp4");
+        std::fs::write(&recording, b"x").unwrap();
+        assert_eq!(unique(&recording), dir.join("b (2).mp4"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

@@ -304,6 +304,11 @@ pub fn do_toggle_recording(app: &AppHandle) {
     let _ = app.emit("changed", ());
 }
 
+/// Only does something while recording. The engine answers with `Marked`, and the cue plays then.
+pub fn do_add_marker(app: &AppHandle) {
+    state::send(app, &Command::AddMarker);
+}
+
 pub fn do_toggle_replay(app: &AppHandle) {
     let shared = app.state::<Shared>();
     let on = {

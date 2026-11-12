@@ -204,6 +204,15 @@ impl Sink {
         active.map(|a| a.recorder.finish())
     }
 
+    /// A marker at the newest frame of the recording, which the file gets as a chapter. Returns
+    /// how far into the file it is, or None when nothing is being written yet (or at all).
+    pub fn add_marker(&self) -> Option<f64> {
+        let s = self.inner.lock().unwrap();
+        let active = s.active.as_ref()?;
+        active.recorder.mark(s.newest_video_us);
+        Some((s.newest_video_us - active.started_us) as f64 / 1e6)
+    }
+
     pub fn is_recording(&self) -> bool {
         let s = self.inner.lock().unwrap();
         s.active.is_some() || s.pending.is_some()
@@ -517,6 +526,41 @@ mod tests {
         assert_eq!(sink.recording_stats().path, Some(dir.join("game part 2.mp4")));
         let last = sink.stop_recording().unwrap();
         assert!(last.error.is_none() && last.bytes > 0);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn chapters_of(path: &Path) -> Vec<(f64, String)> {
+        let data = std::fs::read(path).unwrap();
+        let at = data.windows(4).rposition(|w| w == b"moov").unwrap() - 4;
+        let size = u32::from_be_bytes(data[at..at + 4].try_into().unwrap()) as usize;
+        crate::mp4::chapters::from_moov(&data[at..at + size])
+    }
+
+    #[test]
+    fn markers_go_in_the_file_they_were_set_in() {
+        let dir = std::env::temp_dir().join(format!("tape-sink-markers-{}", std::process::id()));
+        let sink = Sink::new(false, 10);
+        assert!(sink.add_marker().is_none(), "nothing is being recorded");
+        sink.start_recording(dir.join("game.mp4"));
+        assert!(sink.add_marker().is_none(), "the file hasn't started yet");
+        // 10 fps: frame 10 is 1 s in.
+        for pts in 10..40 {
+            sink.video(&format(1), pts, pts == 10, vec![0; 100]);
+            if pts == 25 {
+                assert_eq!(sink.add_marker(), Some(1.5));
+            }
+        }
+        // A parameter change splits the file at frame 40; the next part's markers count from there.
+        for pts in 40..80 {
+            sink.video(&format(2), pts, pts == 40, vec![0; 100]);
+            if pts == 45 || pts == 70 {
+                sink.add_marker();
+            }
+        }
+        let first = wait_finished(&sink).remove(0);
+        let last = sink.stop_recording().unwrap();
+        assert_eq!(chapters_of(&first.path), vec![(1.5, "Marker 1".to_string())]);
+        assert_eq!(chapters_of(&last.path), vec![(0.5, "Marker 1".to_string()), (3.0, "Marker 2".to_string())]);
         let _ = std::fs::remove_dir_all(dir);
     }
 

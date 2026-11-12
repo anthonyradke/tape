@@ -26,6 +26,8 @@ pub struct Hotkeys {
     pub toggle_recording: String,
     pub toggle_replay: String,
     pub overlay: String,
+    /// Marks a moment in a recording.
+    pub marker: String,
 }
 
 impl Default for Hotkeys {
@@ -36,6 +38,8 @@ impl Default for Hotkeys {
             toggle_recording: "Alt+F9".into(),
             toggle_replay: "Alt+Shift+F10".into(),
             overlay: "Alt+Z".into(),
+            // Next to record. ShadowPlay had it for broadcasting, which the NVIDIA app dropped.
+            marker: "Alt+F8".into(),
         }
     }
 }

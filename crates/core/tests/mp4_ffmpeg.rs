@@ -256,6 +256,41 @@ fn av1_recording_and_clip_decode() {
 }
 
 #[test]
+fn markers_become_chapters_ffmpeg_reads() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let (tracks, packets) = stream(Codec::H264, 1, 0);
+    let path = scratch("chapters.mp4");
+    let file = BufWriter::new(File::create(&path).unwrap());
+    let mut w = Mp4Writer::new(file, &tracks).unwrap();
+    for p in &packets {
+        w.push(p, tracks.timescale(p.track)).unwrap();
+    }
+    // Engine times: the stream starts 1000 s in. One marker from before the file is left out.
+    w.set_markers(vec![1_003_250_000, 1_001_000_000, 999_000_000]);
+    w.finish().unwrap();
+    let out = Command::new("ffprobe").args(["-v", "error", "-show_chapters", "-of", "json"]).arg(&path).output().unwrap();
+    assert!(out.status.success() && out.stderr.is_empty(), "{}", String::from_utf8_lossy(&out.stderr));
+    let info: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let chapters = info["chapters"].as_array().unwrap();
+    let read: Vec<(f64, &str)> = chapters
+        .iter()
+        .map(|c| (c["start_time"].as_str().unwrap().parse::<f64>().unwrap(), c["tags"]["title"].as_str().unwrap()))
+        .collect();
+    assert_eq!(read, vec![(1.0, "Marker 1"), (3.25, "Marker 2")], "{info}");
+    // ffmpeg ends each chapter where the next starts and the last at the end of the file.
+    assert_eq!(chapters[0]["end_time"].as_str().unwrap().parse::<f64>().unwrap(), 3.25);
+    decode_clean(&path);
+    // And tape reads them back the same way.
+    let data = fs::read(&path).unwrap();
+    let at = data.windows(4).rposition(|w| w == b"moov").unwrap() - 4;
+    let size = u32::from_be_bytes(data[at..at + 4].try_into().unwrap()) as usize;
+    let back = tape_core::mp4::chapters::from_moov(&data[at..at + size]);
+    assert_eq!(back, vec![(1.0, "Marker 1".to_string()), (3.25, "Marker 2".to_string())]);
+}
+
+#[test]
 fn file_left_by_a_crash_still_plays() {
     if !have_ffmpeg() {
         return;

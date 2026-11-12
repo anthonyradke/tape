@@ -7,35 +7,45 @@ pub enum Cue {
     RecordingStarted,
     RecordingStopped,
     Failed,
+    /// A marker went into the recording.
+    Marker,
+    /// A key that has nothing to act on right now, like a marker with no recording going.
+    Nothing,
 }
 
 const RATE: u32 = 44_100;
+/// How many kinds of `Cue` there are.
+#[cfg_attr(not(windows), allow(dead_code))]
+const CUES: usize = 6;
 const VOLUME: f32 = 0.16;
 
 /// The clip cue plays over every save, usually in headphones, so it's two low plucked notes that
 /// ease in and ring out rather than a beep.
 fn chime() -> Vec<i16> {
-    const STRIKES: [(f32, f32); 2] = [(523.25, 0.0), (659.25, 0.11)]; // C5, E5: (hertz, start second)
+    pluck(&[(523.25, 0.0), (659.25, 0.11)], 0.4, 0.09) // C5, E5
+}
+
+/// Plucked notes as (hertz, start second), each ringing for `ring` seconds.
+fn pluck(strikes: &[(f32, f32)], ring: f32, level: f32) -> Vec<i16> {
     const ATTACK: f32 = 0.012;
-    const RING: f32 = 0.4;
-    const LEVEL: f32 = 0.09;
-    let count = ((0.11 + RING) * RATE as f32) as u32;
+    let last = strikes.iter().map(|s| s.1).fold(0.0, f32::max);
+    let count = ((last + ring) * RATE as f32) as u32;
     (0..count)
         .map(|n| {
             let now = n as f32 / RATE as f32;
-            let mix: f32 = STRIKES
+            let mix: f32 = strikes
                 .iter()
-                .filter(|&&(_, start)| now >= start && now < start + RING)
+                .filter(|&&(_, start)| now >= start && now < start + ring)
                 .map(|&(frequency, start)| {
                     let t = now - start;
                     let rise = (t / ATTACK).min(1.0);
-                    let fall = (1.0 - t / RING).powi(3);
+                    let fall = (1.0 - t / ring).powi(3);
                     // A trace of the octave gives it some body without adding any edge.
                     let phase = t * frequency * std::f32::consts::TAU;
                     (phase.sin() + 0.12 * (phase * 2.0).sin()) * rise * rise * fall
                 })
                 .sum();
-            (mix * LEVEL * 32767.0) as i16
+            (mix * level * 32767.0) as i16
         })
         .collect()
 }
@@ -63,6 +73,10 @@ fn wav(cue: Cue) -> Vec<u8> {
         Cue::RecordingStarted => tones(&[(660.0, 90)]),
         Cue::RecordingStopped => tones(&[(440.0, 90)]),
         Cue::Failed => tones(&[(196.0, 140), (0.0, 60), (196.0, 140)]),
+        // One short high pluck, quieter than a save, so it doesn't pull attention mid-game.
+        Cue::Marker => pluck(&[(987.77, 0.0)], 0.18, 0.07), // B5
+        // A soft low pluck, nothing like the alarm of a failure.
+        Cue::Nothing => pluck(&[(220.0, 0.0)], 0.16, 0.06), // A3
     };
     let data = samples.len() as u32 * 2;
     let mut out = Vec::with_capacity(44 + data as usize);
@@ -91,7 +105,7 @@ pub fn play(cue: Cue) {
     use windows::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
 
     // Async playback reads from this memory after the call returns, so it lives forever.
-    static SOUNDS: [OnceLock<Vec<u8>>; 4] = [OnceLock::new(), OnceLock::new(), OnceLock::new(), OnceLock::new()];
+    static SOUNDS: [OnceLock<Vec<u8>>; CUES] = [const { OnceLock::new() }; CUES];
     let sound = SOUNDS[cue as usize].get_or_init(|| wav(cue));
     unsafe {
         let _ = PlaySoundW(PCWSTR(sound.as_ptr().cast()), None, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
@@ -101,4 +115,21 @@ pub fn play(cue: Cue) {
 #[cfg(not(windows))]
 pub fn play(cue: Cue) {
     let _ = wav(cue);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_cue_is_a_short_sound() {
+        let all = [Cue::ClipSaved, Cue::RecordingStarted, Cue::RecordingStopped, Cue::Failed, Cue::Marker, Cue::Nothing];
+        assert_eq!(all.len(), CUES);
+        for (i, cue) in all.into_iter().enumerate() {
+            assert_eq!(cue as usize, i, "the sounds are kept by position");
+            let data = wav(cue);
+            let seconds = (data.len() - 44) as f32 / 2.0 / RATE as f32;
+            assert!((0.05..1.0).contains(&seconds), "{i}: {seconds} s");
+        }
+    }
 }

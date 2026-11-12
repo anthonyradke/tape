@@ -12,7 +12,7 @@ const LENGTHS = [[30, "30 seconds"], [60, "1 minute"], [120, "2 minutes"], [300,
 const CODECS = [["h264", "H.264", "plays everywhere"], ["hevc", "HEVC", "smaller files, less widely playable"], ["av1", "AV1", "smallest files, newest GPUs only"]];
 const PRESETS = [["fast", "Fast"], ["balanced", "Balanced"], ["quality", "Quality"]];
 const METHODS = [["auto", "Automatic"], ["duplication", "Desktop Duplication"], ["graphics", "Windows Graphics Capture"]];
-const KEYS = [["saveClip", "Save clip"], ["toggleRecording", "Record"], ["toggleReplay", "Instant replay"], ["overlay", "Overlay"]];
+const KEYS = [["saveClip", "Save clip"], ["toggleRecording", "Record"], ["marker", "Add marker"], ["toggleReplay", "Instant replay"], ["overlay", "Overlay"]];
 
 let view = null;
 let toastTimer = 0;

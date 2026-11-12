@@ -544,6 +544,13 @@ pub fn run(backend: Arc<dyn Backend>, input: impl BufRead + Send + 'static, mut 
             Ok(Command::SaveClip) => engine.save_clip(),
             Ok(Command::StartRecording) => engine.start_recording(),
             Ok(Command::StopRecording) => engine.stop_recording(),
+            Ok(Command::AddMarker) => {
+                let seconds = engine.sink.add_marker();
+                if let Some(at) = seconds {
+                    log!("marker at {at:.1} s");
+                }
+                let _ = events.send(Event::Marked { seconds });
+            }
             Ok(Command::SetReplay { on }) => {
                 // Start from a change still waiting for a recording to end, or it would be dropped.
                 let mut settings = engine.deferred.clone().unwrap_or_else(|| engine.settings.clone());

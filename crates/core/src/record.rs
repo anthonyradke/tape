@@ -67,6 +67,8 @@ pub struct Recorder {
     failed: Arc<Mutex<Option<String>>>,
     overflowed: AtomicBool,
     backlog: Arc<Backlog>,
+    /// Engine times of markers, handed to the writer when it finishes.
+    markers: Arc<Mutex<Vec<i64>>>,
 }
 
 impl Recorder {
@@ -88,7 +90,8 @@ impl Recorder {
         let failed = Arc::new(Mutex::new(None));
         let tracks = tracks.clone();
         let backlog = Arc::new(Backlog::new(QUEUE / 2, QUEUE / 4, slow_disk));
-        let (b, f, p, waiting) = (bytes.clone(), failed.clone(), path.to_path_buf(), backlog.clone());
+        let markers = Arc::new(Mutex::new(Vec::new()));
+        let (b, f, p, waiting, m) = (bytes.clone(), failed.clone(), path.to_path_buf(), backlog.clone(), markers.clone());
         let thread = std::thread::Builder::new()
             .name("recording".into())
             .spawn(move || {
@@ -115,6 +118,7 @@ impl Recorder {
                 // Read after finishing: the last fragment is only written then, and a recording
                 // shorter than a fragment has nothing on disk before it.
                 let written = writer.bytes();
+                writer.set_markers(m.lock().unwrap().clone());
                 match writer.finish_with(|out| {
                     out.flush()?;
                     out.get_ref().sync_data()
@@ -135,6 +139,7 @@ impl Recorder {
             failed,
             overflowed: AtomicBool::new(false),
             backlog,
+            markers,
         })
     }
 
@@ -163,6 +168,11 @@ impl Recorder {
                 }
             }
         }
+    }
+
+    /// A marker at this engine time in microseconds, which becomes a chapter.
+    pub fn mark(&self, at_us: i64) {
+        self.markers.lock().unwrap().push(at_us);
     }
 
     pub fn failure(&self) -> Option<String> {

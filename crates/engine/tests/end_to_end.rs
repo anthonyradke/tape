@@ -356,6 +356,47 @@ fn encoder_settings_changed_mid_recording_wait_for_it_to_end() {
     e.wait_status(10, "new rate running", |s| s["video"]["running"] == true && (s["video"]["fps"].as_f64().unwrap() - 30.0).abs() < 5.0);
 }
 
+fn chapters(path: &Path) -> Vec<(f64, String)> {
+    let out = Command::new("ffprobe").args(["-v", "error", "-show_chapters", "-of", "json"]).arg(path).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let info: Value = serde_json::from_slice(&out.stdout).unwrap();
+    info["chapters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| (c["start_time"].as_str().unwrap().parse().unwrap(), c["tags"]["title"].as_str().unwrap().to_string()))
+        .collect()
+}
+
+#[test]
+fn markers_during_a_recording_become_its_chapters() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut e = Engine::start("markers", &[]);
+    e.configure(json!({}));
+    e.send(json!({"cmd": "addMarker"}));
+    let none = e.wait(10, "an answer while not recording", |ev| ev["evt"] == "marked");
+    assert!(none["seconds"].is_null(), "{none}");
+    e.send(json!({"cmd": "startRecording"}));
+    e.wait_status(10, "recording", |s| s["recordingSeconds"].as_f64().unwrap() >= 1.0);
+    e.send(json!({"cmd": "addMarker"}));
+    let first = e.wait(5, "first marker", |ev| ev["evt"] == "marked")["seconds"].as_f64().unwrap();
+    e.wait_status(10, "later", |s| s["recordingSeconds"].as_f64().unwrap() >= first + 1.0);
+    e.send(json!({"cmd": "addMarker"}));
+    let second = e.wait(5, "second marker", |ev| ev["evt"] == "marked")["seconds"].as_f64().unwrap();
+    assert!(first >= 0.9 && second > first + 0.9, "{first} {second}");
+    e.send(json!({"cmd": "stopRecording"}));
+    let event = e.wait(10, "saved", |ev| ev["evt"] == "saved");
+    let read = chapters(&saved(&event));
+    assert_eq!(read.len(), 2, "{read:?}");
+    for ((at, title), (wanted, name)) in read.iter().zip([(first, "Marker 1"), (second, "Marker 2")]) {
+        assert!((at - wanted).abs() < 0.001, "{at} vs {wanted}");
+        assert_eq!(title, name);
+    }
+    decode_clean(&saved(&event));
+}
+
 #[test]
 fn toggling_replay_mid_recording_keeps_a_deferred_change() {
     if !have_ffmpeg() {

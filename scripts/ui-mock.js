@@ -8,7 +8,7 @@
     showCursor: true, replay: scene !== "off", replaySeconds: 120, systemAudio: "default", excludeTapeAudio: true, microphone: scene === "replay" ? "" : "mic-1",
     systemVolume: 100, micVolume: 100, separateTracks: false,
     shareServer: q.get("cloud") === "off" ? "" : "https://tape-clips.example.workers.dev", shareKey: q.get("cloud") === "off" ? "" : "not-a-real-key",
-    hotkeys: { saveClip: "Alt+F10", toggleRecording: "Alt+F9", toggleReplay: "Alt+Shift+F10", overlay: "Alt+Z" }, sounds: true,
+    hotkeys: { saveClip: "Alt+F10", toggleRecording: "Alt+F9", toggleReplay: "Alt+Shift+F10", overlay: "Alt+Z", marker: "Alt+F8" }, sounds: true,
   };
   const recording = scene === "recording";
   const trouble = scene === "trouble";

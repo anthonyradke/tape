@@ -344,6 +344,12 @@ fn handle(app: &AppHandle, event: Event, alarm: &mut Alarm) {
             let _ = app.emit("saved", path);
             let _ = app.emit("changed", ());
         }
+        Event::Marked { seconds } => {
+            if sounds {
+                cue::play(if seconds.is_some() { Cue::Marker } else { Cue::Nothing });
+            }
+            let _ = app.emit("marked", seconds);
+        }
         Event::Error { message, clip, stopped } => {
             if clip && sounds {
                 cue::play(Cue::Failed);

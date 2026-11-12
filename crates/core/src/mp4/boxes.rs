@@ -132,6 +132,11 @@ pub fn ftyp(out: &mut Vec<u8>, codec: Codec) {
 
 /// `fragmented` adds `mvex`, marking the track tables as empty until the fragments that follow.
 pub fn moov(out: &mut Vec<u8>, tracks: &[Table], fragmented: bool) {
+    moov_with(out, tracks, fragmented, &[]);
+}
+
+/// `moov` with `udta` (a whole box, or nothing) at its end, for the chapters of a recording.
+pub fn moov_with(out: &mut Vec<u8>, tracks: &[Table], fragmented: bool, udta: &[u8]) {
     bx(out, b"moov", |o| {
         let duration = tracks
             .iter()
@@ -166,6 +171,7 @@ pub fn moov(out: &mut Vec<u8>, tracks: &[Table], fragmented: bool) {
                 }
             });
         }
+        o.extend_from_slice(udta);
     });
 }
 

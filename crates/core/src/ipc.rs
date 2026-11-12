@@ -13,6 +13,8 @@ pub enum Command {
     StartRecording,
     StopRecording,
     SetReplay { on: bool },
+    /// A marker at this point of the recording, which the file gets as a chapter.
+    AddMarker,
     Probe,
     Shutdown,
 }
@@ -167,6 +169,9 @@ pub enum Event {
     Status { status: Box<Status> },
     Probe { probe: Box<Probe> },
     Saved { kind: SavedKind, path: String, bytes: u64 },
+    /// The answer to `AddMarker`: how far into the recording's file it went, or None when no
+    /// recording is being written.
+    Marked { seconds: Option<f64> },
     /// `clip` is set when this is the answer to a save request, so the host can play the failure cue.
     /// `stopped` is set when the recording has ended. An error in a file that was split off while
     /// the recording goes on in the next one leaves it unset.

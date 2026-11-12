@@ -1,7 +1,8 @@
 use std::io::{self, Seek, SeekFrom, Write};
 use std::sync::Arc;
 
-use super::boxes::{bx, ftyp, full, moov, Kind, Put, Table};
+use super::boxes::{bx, ftyp, full, moov, moov_with, Kind, Put, Table};
+use super::chapters;
 use crate::packet::{from_micros, Packet, Tracks};
 
 const SYNC_FLAGS: u32 = 0x0200_0000;
@@ -55,6 +56,8 @@ pub struct Mp4Writer<W: Write + Seek> {
     bytes: u64,
     /// A write failed part way, so the sample tables no longer match the file.
     failed: bool,
+    /// Engine times in microseconds of the markers set during this file, which become chapters.
+    markers: Vec<i64>,
 }
 
 impl<W: Write + Seek> Mp4Writer<W> {
@@ -93,7 +96,22 @@ impl<W: Write + Seek> Mp4Writer<W> {
             fragment_video_ticks: 0,
             bytes: 0,
             failed: false,
+            markers: Vec::new(),
         })
+    }
+
+    /// Markers at these engine times (microseconds, on the same timeline as the packets), written
+    /// as chapters "Marker 1", "Marker 2"... when the file is finished. Times from before the
+    /// file's first frame are left out, so a file split off from a recording keeps only its own.
+    pub fn set_markers(&mut self, mut at_us: Vec<i64>) {
+        at_us.sort_unstable();
+        self.markers = at_us;
+    }
+
+    fn chapters(&self) -> Vec<(f64, String)> {
+        let Some(origin) = self.origin_us else { return Vec::new() };
+        let seconds: Vec<f64> = self.markers.iter().filter(|&&us| us >= origin).map(|&us| (us - origin) as f64 / 1e6).collect();
+        chapters::markers(&seconds)
     }
 
     /// Bytes of media written so far.
@@ -243,7 +261,7 @@ impl<W: Write + Seek> Mp4Writer<W> {
 
         let tables: Vec<Table> = self.tracks.iter().map(|t| t.table.clone()).collect();
         let mut index = Vec::new();
-        moov(&mut index, &tables, false);
+        moov_with(&mut index, &tables, false, &chapters::udta(&self.chapters()));
         self.out.write_all(&index)?;
         self.out.flush()?;
         let size = self.pos + index.len() as u64;

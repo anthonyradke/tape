@@ -18,6 +18,7 @@ enum Action {
     ToggleRecording,
     ToggleReplay,
     Overlay,
+    Marker,
     Escape,
 }
 
@@ -42,6 +43,7 @@ pub fn plugin() -> TauriPlugin<Wry> {
                 Some(Action::ToggleRecording) => commands::do_toggle_recording(app),
                 Some(Action::ToggleReplay) => commands::do_toggle_replay(app),
                 Some(Action::Overlay) => overlay::toggle(app),
+                Some(Action::Marker) => commands::do_add_marker(app),
                 Some(Action::Escape) => {
                     let _ = app.emit_to("overlay", "overlay-escape", ());
                 }
@@ -51,12 +53,13 @@ pub fn plugin() -> TauriPlugin<Wry> {
         .build()
 }
 
-fn wanted(keys: &Hotkeys) -> [(&String, Action); 4] {
+fn wanted(keys: &Hotkeys) -> [(&String, Action); 5] {
     [
         (&keys.save_clip, Action::SaveClip),
         (&keys.toggle_recording, Action::ToggleRecording),
         (&keys.toggle_replay, Action::ToggleReplay),
         (&keys.overlay, Action::Overlay),
+        (&keys.marker, Action::Marker),
     ]
 }
 

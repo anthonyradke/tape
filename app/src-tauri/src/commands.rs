@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use serde::Serialize;
@@ -423,13 +423,20 @@ pub async fn pick_folder(app: AppHandle) -> Option<String> {
     app.dialog().file().blocking_pick_folder().map(|f| f.to_string())
 }
 
+/// One at a time: two would fight over the same report file and the same GPU.
+static SELF_TEST_RUNNING: AtomicBool = AtomicBool::new(false);
+
 #[tauri::command]
 pub fn self_test(app: AppHandle) {
+    if SELF_TEST_RUNNING.swap(true, Ordering::Relaxed) {
+        return;
+    }
     *app.state::<Shared>().self_test.lock().unwrap() = None;
     std::thread::spawn(move || {
         let shared = app.state::<Shared>();
         let report = run_self_test(&shared);
         *shared.self_test.lock().unwrap() = Some(report.clone());
+        SELF_TEST_RUNNING.store(false, Ordering::Relaxed);
         let _ = app.emit("selftest", report);
     });
 }

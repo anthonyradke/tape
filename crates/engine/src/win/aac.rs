@@ -18,10 +18,21 @@ const AAC_LC_LEVEL_2: u32 = 0x29;
 const RAW_AAC: u32 = 0;
 const FRAME_100NS: i64 = AAC_FRAME as i64 * 10_000_000 / AUDIO_RATE as i64;
 
+/// One MFStartup, undone when dropped. Media Foundation counts them.
+struct MediaFoundation;
+
+impl Drop for MediaFoundation {
+    fn drop(&mut self) {
+        let _ = unsafe { MFShutdown() };
+    }
+}
+
 pub struct Aac {
     transform: IMFTransform,
     output_size: u32,
     frames: i64,
+    /// Last, so the encoder is released before Media Foundation shuts down.
+    _media: MediaFoundation,
 }
 
 fn text(e: windows::core::Error) -> String {
@@ -36,6 +47,7 @@ impl Aac {
     fn create() -> windows::core::Result<Aac> {
         unsafe {
             MFStartup(MF_VERSION, MFSTARTUP_LITE)?;
+            let media = MediaFoundation;
             let transform: IMFTransform = CoCreateInstance(&AAC_ENCODER, None, CLSCTX_INPROC_SERVER)?;
 
             // This encoder wants its output type set first.
@@ -63,7 +75,7 @@ impl Aac {
             let info = transform.GetOutputStreamInfo(0)?;
             transform.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)?;
             transform.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)?;
-            Ok(Aac { transform, output_size: info.cbSize.max(8192), frames: 0 })
+            Ok(Aac { transform, output_size: info.cbSize.max(8192), frames: 0, _media: media })
         }
     }
 

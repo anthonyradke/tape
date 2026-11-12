@@ -3,15 +3,21 @@
 # Hosted runners have a software GPU and no sound hardware, so NVENC, the video processor and
 # WASAPI only run on a real machine. The UI test then runs the real app in a real WebView2 on the
 # fake engine, to show that clips play, seek and make thumbnails, and that the overlay opens.
+# The release workflow runs this too, and only publishes when it passes on the tagged commit.
 name: ci
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -22,6 +28,8 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install ffmpeg
         run: sudo apt-get update -q && sudo apt-get install -yq ffmpeg
       - name: Test
@@ -49,7 +57,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable, 2026-11-12
         with:
           toolchain: stable
+      # Shared with the release build, which restores it from main (a tag run can't save a cache
+      # anything else can use, so only main saves).
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: windows
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Unit tests
         run: cargo test -p tape-core --lib

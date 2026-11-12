@@ -28,6 +28,12 @@ git rev-parse -q --verify "refs/tags/v$v" >/dev/null && fail "v$v already exists
 printf '%s\n' "$notes" | grep -iq 'co-authored-by' && fail "UNRELEASED.md has a co-author line"
 
 cargo test -q -p tape-core -p tape-engine -p nvenc || fail "tests failed, nothing was changed"
+# CI tests on Windows and only publishes when that passes, so catch what would stop it here, before
+# a tag exists: a commit that already failed on GitHub, or code that doesn't compile for Windows.
+[ "$(gh run list --workflow ci.yml --commit "$(git rev-parse HEAD)" --json conclusion -q '.[0].conclusion' 2>/dev/null)" != failure ] ||
+  fail "CI failed on this commit on GitHub; fix it first"
+XWIN_ACCEPT_LICENSE=1 cargo xwin check -q --target x86_64-pc-windows-msvc --workspace --all-targets ||
+  fail "tape doesn't build for Windows, nothing was changed"
 
 # perl rather than sed -i, whose options differ between GNU and macOS. No /g: only the package's own
 # version, the first one in each file.

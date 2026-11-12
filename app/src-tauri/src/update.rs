@@ -1,6 +1,7 @@
 //! Self-update from GitHub Releases: a signed installer and a latest.json, published by the release
 //! workflow. tape checks quietly and only installs when asked.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -63,16 +64,27 @@ fn set(app: &AppHandle, f: impl FnOnce(&mut Status)) {
     let _ = app.emit("update", status);
 }
 
+/// Set once `on_before_exit` has taken the engine and the tray down. If the installer then fails to
+/// start, tape has nothing left running and has to start over.
+static TORN_DOWN: AtomicBool = AtomicBool::new(false);
+
 /// The installer has to replace an exe the engine is running from, and the updater ends this
 /// process with `exit(0)`, which skips everything a normal quit does.
 fn updater(app: &AppHandle) -> tauri_plugin_updater::Result<tauri_plugin_updater::Updater> {
     let handle = app.clone();
     app.updater_builder()
         .on_before_exit(move || {
+            TORN_DOWN.store(true, Ordering::Relaxed);
             supervisor::stop_engine(&handle);
             handle.cleanup_before_exit();
         })
         .build()
+}
+
+fn recording(app: &AppHandle) -> bool {
+    let shared = app.state::<state::Shared>();
+    let recording = shared.status.lock().unwrap().recording;
+    recording || shared.recording_wanted.load(Ordering::Relaxed)
 }
 
 pub async fn check(app: &AppHandle) {
@@ -114,7 +126,7 @@ pub async fn check(app: &AppHandle) {
 
 /// Downloads, verifies and runs the installer, which restarts tape. Only returns on failure.
 pub async fn install(app: &AppHandle) -> Result<(), String> {
-    if app.state::<state::Shared>().status.lock().unwrap().recording {
+    if recording(app) {
         return Err("Stop the recording first.".into());
     }
     let update = app.state::<Shared>().pending.lock().unwrap().clone().ok_or("No update to install.")?;
@@ -126,8 +138,8 @@ pub async fn install(app: &AppHandle) -> Result<(), String> {
         s.error = None;
     });
     let mut done = 0u64;
-    let result = update
-        .download_and_install(
+    let downloaded = update
+        .download(
             |chunk, total| {
                 done += chunk as u64;
                 if let Some(total) = total.filter(|&t| t > 0) {
@@ -140,8 +152,19 @@ pub async fn install(app: &AppHandle) -> Result<(), String> {
             || {},
         )
         .await;
-    let err = match result {
-        Ok(()) => "The installer didn't start.".to_string(),
+    let err = match downloaded {
+        // A recording started while it downloaded would be cut short by stopping the engine.
+        Ok(_) if recording(app) => "A recording started during the download. Stop it, then update again.".to_string(),
+        Ok(bytes) => match update.install(bytes) {
+            Ok(()) => "The installer didn't start.".to_string(),
+            Err(e) if TORN_DOWN.load(Ordering::Relaxed) => {
+                // The engine, tray and windows are gone by now. Starting over brings them back, and
+                // the next try can download again.
+                app.request_restart();
+                return Err(format!("Update failed: {e}"));
+            }
+            Err(e) => e.to_string(),
+        },
         Err(e) => e.to_string(),
     };
     set(app, |s| {

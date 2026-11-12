@@ -305,7 +305,9 @@ const Gallery = (() => {
   let clips = [];
   let game = "";
   let kind = "all";
-  let current = -1; // index into shown() of the clip in the player
+  // The clip in the player, by path: the list reloads under it (a save puts a new clip on top), so
+  // an index would end up pointing at a neighbour.
+  let currentPath = null;
   let making = false;
   const unreadable = new Set(); // no point retrying these until the next run
 
@@ -415,7 +417,7 @@ const Gallery = (() => {
     making = true;
     for (;;) {
       const next = clips.find((c) => !c.thumb && !unreadable.has(c.key));
-      if (!next || current >= 0) break;
+      if (!next || isOpen()) break;
       try {
         Object.assign(next, await makeThumb(next));
         renderList();
@@ -430,28 +432,42 @@ const Gallery = (() => {
     clips = await invoke("clips");
     if (game && !clips.some((c) => c.game === game)) game = "";
     renderList();
+    resync();
     fillThumbs();
+  }
+
+  // After the list or the filter changes: the player keeps its clip, or closes if it's gone.
+  function resync() {
+    if (!isOpen()) return;
+    if (!playing()) return stop();
+    // Redrawing the bar would drop a rename being typed, so then only the parts around it.
+    if ($("player-rename")) {
+      renderNav();
+      renderShare();
+    } else {
+      renderBar();
+    }
   }
 
   // ---------- player ----------
 
   const player = () => $("player");
   const video = () => $("player-video");
-  const playing = () => shown()[current];
+  const playing = () => (currentPath == null ? undefined : shown().find((c) => c.path === currentPath));
+  const index = () => shown().findIndex((c) => c.path === currentPath);
 
-  function show(index, at) {
-    const list = shown();
-    const clip = list[index];
+  function show(at, time) {
+    const clip = shown()[at];
     if (!clip) return;
-    if (current < 0) playerChanged(true);
+    if (!isOpen()) playerChanged(true);
     closeTrim();
     closeMenu();
-    current = index;
+    currentPath = clip.path;
     const v = video();
     $("player-note").hidden = true;
     v.hidden = false;
     v.src = convertFileSrc(clip.path);
-    if (at) v.currentTime = at;
+    if (time) v.currentTime = time;
     v.play().catch(() => {});
     renderBar();
     player().hidden = false;
@@ -462,7 +478,6 @@ const Gallery = (() => {
   function renderBar() {
     const clip = playing();
     if (!clip) return;
-    const list = shown();
     const custom = customName(clip);
     $("player-info").innerHTML = `<div class="player-title" title="${esc(clip.name)}">${esc(custom || clip.game)}<span class="player-name">${esc(custom ? clip.game : stem(clip).replace(clip.game, "").trim())}</span></div>
       <div class="player-meta">${when(clip.modified)} · ${bytes(clip.bytes)}${clip.seconds != null ? ` · ${clock(clip.seconds)}` : ""}</div>`;
@@ -470,9 +485,14 @@ const Gallery = (() => {
     star.classList.toggle("on", !!clip.starred);
     star.title = clip.starred ? "Starred. Click to unstar." : "Star: keeps it under Starred";
     star.setAttribute("aria-pressed", !!clip.starred);
-    $("player-prev").disabled = current === 0;
-    $("player-next").disabled = current === list.length - 1;
+    renderNav();
     renderShare();
+  }
+
+  function renderNav() {
+    const i = index();
+    $("player-prev").disabled = i <= 0;
+    $("player-next").disabled = i < 0 || i === shown().length - 1;
   }
 
   function renderShare() {
@@ -506,10 +526,10 @@ const Gallery = (() => {
   }
 
   function stop() {
-    if (current < 0) return;
+    if (!isOpen()) return;
     closeTrim();
     closeMenu();
-    current = -1;
+    currentPath = null;
     player().hidden = true;
     $("player-scrim").hidden = true;
     document.body.classList.remove("playing");
@@ -518,11 +538,11 @@ const Gallery = (() => {
     fillThumbs();
   }
 
-  function play(path, at) {
-    show(shown().findIndex((c) => c.path === path), at);
+  function play(path, time) {
+    show(shown().findIndex((c) => c.path === path), time);
   }
 
-  const isOpen = () => current >= 0;
+  const isOpen = () => currentPath != null;
 
   // Esc closes the innermost thing open. False if there was nothing to close.
   function escape() {
@@ -600,6 +620,7 @@ const Gallery = (() => {
     release();
     try {
       const path = await invoke("rename_clip", { path: clip.path, name });
+      currentPath = path; // so the reload below keeps the player on it
       await load();
       play(path, at);
       if (paused) video().pause();
@@ -624,15 +645,22 @@ const Gallery = (() => {
       return;
     }
     deleteArmed = 0;
-    const index = current;
+    // The next older one takes its place, or the newer one if it was the last.
+    const list = shown();
+    const i = list.indexOf(clip);
+    const next = list[i + 1] || list[i - 1];
     release();
     try {
       await invoke("delete_clip", { path: clip.path });
-      await load();
       toast("Moved to the Recycle Bin");
-      const list = shown();
-      if (!list.length) return stop();
-      show(Math.min(index, list.length - 1));
+      if (!isOpen()) return load(); // a reload in the meantime already closed it
+      if (!next) {
+        stop();
+        return load();
+      }
+      currentPath = next.path;
+      await load();
+      if (isOpen()) show(index());
     } catch (err) {
       toast(String(err), true);
       play(clip.path);
@@ -662,7 +690,7 @@ const Gallery = (() => {
     } catch (err) {
       return toast(String(err), true);
     }
-    if (playing() !== clip) return;
+    if (playing()?.path !== clip.path) return;
     trim = { path: clip.path, keyframes: info.keyframes, duration: info.duration, start: 0, end: info.duration, saving: false };
     const ticks = info.keyframes.length <= 400 ? info.keyframes.map((k) => `<i style="left:${(k / info.duration) * 100}%"></i>`).join("") : "";
     $("player-trim").innerHTML = `<div class="trim-track" id="trim-track">
@@ -824,7 +852,7 @@ const Gallery = (() => {
     v.volume = Number(localStorage.getItem("volume") ?? 1);
     v.addEventListener("volumechange", () => localStorage.setItem("volume", v.volume));
     v.addEventListener("error", () => {
-      if (current < 0 || !v.getAttribute("src")) return;
+      if (!isOpen() || !v.getAttribute("src")) return;
       v.hidden = true;
       $("player-note").hidden = false;
     });
@@ -834,6 +862,7 @@ const Gallery = (() => {
     if (!e.target.matches(".game-pick")) return;
     game = e.target.value;
     renderList();
+    resync();
   });
 
   document.addEventListener("click", (e) => {
@@ -844,13 +873,14 @@ const Gallery = (() => {
     if (path) return play(path);
     if (wanted) {
       kind = wanted;
-      return renderList();
+      renderList();
+      return resync();
     }
     const clip = playing();
     if (action !== "delete") deleteArmed = 0;
     switch (action) {
-      case "prev": return show(current - 1);
-      case "next": return show(current + 1);
+      case "prev": return show(index() - 1);
+      case "next": return show(index() + 1);
       case "close": return stop();
       case "star": return toggleStar();
       case "menu": return openMenu();

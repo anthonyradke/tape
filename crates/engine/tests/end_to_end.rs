@@ -392,6 +392,18 @@ fn audio_device_loss_does_not_touch_video() {
 }
 
 #[test]
+fn a_paused_capture_is_reported_as_transient_and_keeps_the_buffer_going() {
+    let mut e = Engine::start("paused", &[("TAPE_FAKE_PAUSE_AFTER", "30")]);
+    e.configure(json!({"replaySeconds": 5}));
+    let s = e.wait_status(5, "running", |s| s["video"]["running"] == true);
+    assert_eq!(s["video"]["transient"], false);
+    let s = e.wait_status(5, "paused", |s| s["video"]["problem"].is_string());
+    assert_eq!(s["video"]["transient"], true);
+    assert_eq!(s["video"]["running"], true);
+    assert_eq!(s["restarts"], 0);
+}
+
+#[test]
 fn saving_with_replay_off_says_so() {
     let mut e = Engine::start("off", &[]);
     e.configure(json!({"replay": false}));

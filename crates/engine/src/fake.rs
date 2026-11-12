@@ -42,6 +42,9 @@ pub struct Fake {
     audio_fails: AtomicU32,
     /// The AAC encoder can't be created, as on Windows N.
     no_aac: bool,
+    /// Report capture as paused after this many frames, as the lock screen does, and keep
+    /// encoding the last image.
+    pause_after: u32,
 }
 
 impl Fake {
@@ -59,6 +62,7 @@ impl Fake {
             crash_after: number("TAPE_FAKE_CRASH_AFTER"),
             audio_fails: AtomicU32::new(number("TAPE_FAKE_AUDIO_FAILS")),
             no_aac: number("TAPE_FAKE_NO_AAC") != 0,
+            pause_after: number("TAPE_FAKE_PAUSE_AFTER"),
         }
     }
 }
@@ -163,7 +167,12 @@ impl Backend for Fake {
                 format.config = config;
             }
             ctx.stats.bytes.fetch_add(parsed.sample.len() as u64, Ordering::Relaxed);
-            *ctx.stats.problem.lock().unwrap() = None;
+            if self.pause_after > 0 && produced >= self.pause_after {
+                ctx.stats.transient.store(true, Ordering::Relaxed);
+                *ctx.stats.problem.lock().unwrap() = Some("Capture is paused by a Windows security prompt or the lock screen".into());
+            } else {
+                *ctx.stats.problem.lock().unwrap() = None;
+            }
             ctx.sink.video(&format, from_micros(next_tick, settings.fps), key, parsed.sample);
             produced += 1;
             index += 1;

@@ -56,6 +56,12 @@ impl Alarm {
         self.down_since.get_or_insert_with(Instant::now);
     }
 
+    /// Down, but for a reason that passes by itself (the lock screen, a UAC prompt, the monitor
+    /// off), so the time spent like this doesn't count towards the alarm.
+    fn paused(&mut self) {
+        self.down_since = None;
+    }
+
     fn crashed(&mut self) {
         self.down();
         self.crashes.push(Instant::now());
@@ -259,7 +265,11 @@ fn handle(app: &AppHandle, event: Event, alarm: &mut Alarm) {
                 if wants_video && !working {
                     health.light = Light::Trouble;
                     health.problem = Some(status.video.problem.clone().unwrap_or_else(|| "Starting capture".into()));
-                    alarm.down();
+                    if status.video.transient {
+                        alarm.paused();
+                    } else {
+                        alarm.down();
+                    }
                 } else {
                     alarm.working();
                     health.problem = audio_problem;

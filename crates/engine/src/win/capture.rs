@@ -26,7 +26,8 @@ use super::gfx::{Gfx, OutputInfo};
 use crate::log;
 
 pub enum CaptureError {
-    /// Normal while a UAC prompt or the lock screen is up. Reopen and keep going.
+    /// Normal while a UAC prompt or the lock screen is up, the monitor is off or the session is
+    /// disconnected. Reopen and keep going; the host doesn't sound the alarm for these.
     Transient(String),
     /// This API isn't going to work here. Worth trying the other one.
     Refused(String),
@@ -114,6 +115,8 @@ impl Duplication {
         let duplication = duplication.map_err(|e| {
             if e.code() == E_ACCESSDENIED {
                 CaptureError::Transient("Capture is paused by a Windows security prompt or the lock screen".into())
+            } else if e.code() == DXGI_ERROR_SESSION_DISCONNECTED {
+                CaptureError::Transient("Capture is paused while the session is disconnected".into())
             } else {
                 CaptureError::Refused(format!("Desktop Duplication: {e}"))
             }

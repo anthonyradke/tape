@@ -49,6 +49,8 @@ pub struct VideoStats {
     pub running: AtomicBool,
     pub method: Mutex<String>,
     pub problem: Mutex<Option<String>>,
+    /// `problem` is Windows holding capture back for a while, see `VideoStatus::transient`.
+    pub transient: AtomicBool,
 }
 
 impl VideoStats {

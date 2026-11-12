@@ -189,6 +189,7 @@ impl Engine {
             self.restarts.clone(),
             move |message| {
                 fail_stats.running.store(false, Ordering::Relaxed);
+                fail_stats.transient.store(false, Ordering::Relaxed);
                 *fail_stats.problem.lock().unwrap() = Some(message);
             },
             move || beat_stats.beat(&clock),
@@ -372,6 +373,7 @@ impl Engine {
         }
         let s = &self.stats;
         let rec = self.sink.recording_stats();
+        let problem = s.problem.lock().unwrap().clone();
         let take_peak = |source: &Mutex<Option<AudioSource>>| {
             let mut guard = source.lock().unwrap();
             let snapshot = guard.clone();
@@ -390,7 +392,8 @@ impl Engine {
                 encode_ms: s.encode_us.load(Ordering::Relaxed) as f32 / 1000.0,
                 dropped: s.dropped.load(Ordering::Relaxed),
                 bitrate_kbps: self.rate_kbps,
-                problem: s.problem.lock().unwrap().clone(),
+                problem: problem.clone(),
+                transient: problem.is_some() && s.transient.load(Ordering::Relaxed),
             },
             system: take_peak(&self.audio_shared.system),
             mic: take_peak(&self.audio_shared.mic),

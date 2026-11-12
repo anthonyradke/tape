@@ -109,8 +109,10 @@ pub fn run(settings: &Settings, ctx: &VideoContext) -> Result<(), String> {
                     Err(e) => {
                         attempts += 1;
                         log!("capture: {}", e.message());
-                        *ctx.stats.problem.lock().unwrap() = Some(e.message().to_string());
                         let refused = matches!(e, CaptureError::Refused(_));
+                        // Set before the problem, so a status report never pairs it with the old flag.
+                        ctx.stats.transient.store(!refused, Ordering::Relaxed);
+                        *ctx.stats.problem.lock().unwrap() = Some(e.message().to_string());
                         // Auto keeps alternating, so a refusal that has passed (a display change
                         // mid-open) doesn't leave it stuck on the fallback for good.
                         if settings.capture == CaptureMethod::Auto && refused && attempts >= AUTO_ATTEMPTS {

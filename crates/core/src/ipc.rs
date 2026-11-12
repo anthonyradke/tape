@@ -31,6 +31,9 @@ pub struct VideoStatus {
     pub bitrate_kbps: u32,
     /// Last problem, cleared once frames flow again.
     pub problem: Option<String>,
+    /// The problem is Windows holding capture back for a while (the lock screen, a UAC prompt,
+    /// the monitor turned off), which ends by itself and isn't worth an alarm.
+    pub transient: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -126,11 +129,15 @@ mod tests {
     fn messages_from_an_older_engine_still_parse() {
         let event: Event = serde_json::from_str(r#"{"evt":"error","message":"x","clip":false}"#).unwrap();
         assert!(matches!(event, Event::Error { stopped: false, .. }));
+        let status: Status = serde_json::from_str(r#"{"video":{"running":true,"problem":"x"}}"#).unwrap();
+        assert!(!status.video.transient);
     }
 
     #[test]
     fn new_fields_are_sent() {
         let line = serde_json::to_string(&Event::Error { message: "x".into(), clip: false, stopped: true }).unwrap();
         assert!(line.contains(r#""stopped":true"#), "{line}");
+        let video = VideoStatus { transient: true, ..Default::default() };
+        assert!(serde_json::to_string(&video).unwrap().contains(r#""transient":true"#));
     }
 }

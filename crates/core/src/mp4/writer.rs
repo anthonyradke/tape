@@ -51,6 +51,8 @@ pub struct Mp4Writer<W: Write + Seek> {
     fragment_video_ticks: i64,
     video_ticks_per_fragment: i64,
     bytes: u64,
+    /// A write failed part way, so the sample tables no longer match the file.
+    failed: bool,
 }
 
 impl<W: Write + Seek> Mp4Writer<W> {
@@ -87,6 +89,7 @@ impl<W: Write + Seek> Mp4Writer<W> {
             sequence: 0,
             fragment_video_ticks: 0,
             bytes: 0,
+            failed: false,
         })
     }
 
@@ -95,7 +98,10 @@ impl<W: Write + Seek> Mp4Writer<W> {
         self.bytes
     }
 
+    /// After an error every later call fails too: what is on disk is then only the fragments
+    /// written before it, which still play, and anything more would point at the wrong bytes.
     pub fn push(&mut self, packet: &Packet, timescale: u32) -> io::Result<()> {
+        self.check()?;
         let us = packet.micros(timescale);
         let origin_us = match self.origin_us {
             Some(o) => o,
@@ -137,7 +143,22 @@ impl<W: Write + Seek> Mp4Writer<W> {
         Ok(())
     }
 
+    fn check(&self) -> io::Result<()> {
+        if self.failed {
+            return Err(io::Error::other("an earlier write to this file failed"));
+        }
+        Ok(())
+    }
+
+    /// The tables are updated as the samples go out, so a failure part way marks the writer
+    /// failed rather than leaving tables that point past what reached the disk.
     fn flush_fragment(&mut self) -> io::Result<()> {
+        let result = self.write_fragment();
+        self.failed |= result.is_err();
+        result
+    }
+
+    fn write_fragment(&mut self) -> io::Result<()> {
         if self.tracks.iter().all(|t| t.fragment.is_empty()) {
             return Ok(());
         }
@@ -203,6 +224,7 @@ impl<W: Write + Seek> Mp4Writer<W> {
     /// one large `mdat` and the normal `moov` at the end points straight at the samples. Returns
     /// the file's final size, which includes the last fragment written here.
     pub fn finish(mut self) -> io::Result<(W, u64)> {
+        self.check()?;
         for t in &mut self.tracks {
             if let Some((_, key, data)) = t.held.take() {
                 t.fragment.push(Sample { duration: t.last_duration, key, data });
@@ -336,4 +358,94 @@ pub fn write_clip<W: Write>(mut out: W, tracks: &Tracks, packets: &[Packet]) -> 
     }
     out.flush()?;
     Ok(data_at + payload)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::packet::{AudioFormat, Codec, VideoFormat};
+    use std::cell::RefCell;
+    use std::io::Cursor;
+    use std::rc::Rc;
+
+    /// A file whose writes fail once at `room` bytes, as when the disk fills and space is freed
+    /// again, or a USB drive drops out for a moment. The bytes stay readable after the writer is
+    /// gone.
+    struct Disk {
+        file: Rc<RefCell<Cursor<Vec<u8>>>>,
+        room: u64,
+    }
+
+    impl Write for Disk {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            let mut file = self.file.borrow_mut();
+            let left = self.room.saturating_sub(file.position()) as usize;
+            if left == 0 {
+                self.room = u64::MAX;
+                return Err(io::Error::other("disk full"));
+            }
+            file.write(&buf[..buf.len().min(left)])
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Seek for Disk {
+        fn seek(&mut self, to: SeekFrom) -> io::Result<u64> {
+            self.file.borrow_mut().seek(to)
+        }
+    }
+
+    pub(super) fn tracks() -> Tracks {
+        Tracks {
+            video: VideoFormat { codec: Codec::H264, width: 16, height: 16, fps: 10, config: vec![1, 0x64, 0, 0x1f, 0xff, 0xe0, 0] },
+            audio: vec![AudioFormat { name: "a".into(), asc: vec![0x11, 0x90] }],
+        }
+    }
+
+    pub(super) fn frame(n: i64) -> Packet {
+        Packet { track: 0, pts: n, key: n % 20 == 0, data: Arc::new(vec![n as u8; 500]) }
+    }
+
+    fn top_level(data: &[u8]) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut i = 0usize;
+        while i + 8 <= data.len() {
+            let mut size = u32::from_be_bytes(data[i..i + 4].try_into().unwrap()) as u64;
+            if size == 1 {
+                size = u64::from_be_bytes(data[i + 8..i + 16].try_into().unwrap());
+            }
+            out.push(String::from_utf8_lossy(&data[i + 4..i + 8]).into_owned());
+            if size < 8 {
+                break;
+            }
+            i += size as usize;
+        }
+        out
+    }
+
+    #[test]
+    fn a_failed_write_leaves_the_fragments_alone() {
+        let file = Rc::new(RefCell::new(Cursor::new(Vec::new())));
+        let t = tracks();
+        let mut w = Mp4Writer::new(Disk { file: file.clone(), room: 30_000 }, &t).unwrap();
+        // 2 s fragments of 20 frames, 10 kB each: the third fragment hits the error. Writes work
+        // again afterwards, which is what would let a finish write a wrong index.
+        let mut failed_at = None;
+        for n in 0..100 {
+            if w.push(&frame(n), 10).is_err() {
+                failed_at = Some(n);
+                break;
+            }
+        }
+        let failed_at = failed_at.expect("the disk never filled");
+        assert!(w.push(&frame(failed_at + 1), 10).is_err(), "later writes must fail too");
+        assert!(w.finish().is_err(), "finishing must be refused");
+        let data = file.borrow().get_ref().clone();
+        let boxes = top_level(&data);
+        // Still the fragmented layout: header moov, padding, two whole fragments.
+        assert_eq!(&boxes[..6], ["ftyp", "moov", "free", "moof", "mdat", "moof"], "{boxes:?}");
+        assert_eq!(boxes.iter().filter(|b| *b == "moov").count(), 1, "no index may be appended: {boxes:?}");
+    }
 }

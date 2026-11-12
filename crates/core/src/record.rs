@@ -61,18 +61,22 @@ impl Recorder {
                     }
                     b.store(writer.bytes(), Ordering::Relaxed);
                 }
+                // After a write failure the file is left as it is: the fragments already on disk
+                // play as a fragmented MP4, and finishing would hide them behind an index that
+                // points at the wrong bytes.
+                if error.is_some() {
+                    return Finished { path: p, bytes: writer.bytes(), error };
+                }
                 // Read after finishing: the last fragment is only written then, and a recording
                 // shorter than a fragment has nothing on disk before it.
-                let mut total = writer.bytes();
-                // After a write failure the index may not fit on the disk either, but the
-                // fragments already on disk stay playable, so nothing is lost by trying.
+                let written = writer.bytes();
                 match writer.finish() {
-                    Ok((_, size)) => total = size,
+                    Ok((_, size)) => Finished { path: p, bytes: size, error },
                     Err(e) => {
-                        error.get_or_insert(format!("couldn't finish {}: {e}", p.display()));
+                        let error = Some(format!("couldn't finish {}: {e}", p.display()));
+                        Finished { path: p, bytes: written, error }
                     }
                 }
-                Finished { path: p, bytes: total, error }
             })
             .map_err(|e| e.to_string())?;
         Ok(Recorder {

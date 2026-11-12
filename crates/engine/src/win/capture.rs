@@ -248,7 +248,7 @@ pub struct GraphicsCapture {
     gfx: Gfx,
     device: IDirect3DDevice,
     pool: Direct3D11CaptureFramePool,
-    _session: GraphicsCaptureSession,
+    session: GraphicsCaptureSession,
     size: SizeInt32,
     closed: Arc<AtomicBool>,
     store: Store,
@@ -282,7 +282,7 @@ impl GraphicsCapture {
             Ok(())
         }))?;
         session.StartCapture()?;
-        Ok(GraphicsCapture { gfx: gfx.clone(), device, pool, _session: session, size, closed, store: Store::default() })
+        Ok(GraphicsCapture { gfx: gfx.clone(), device, pool, session, size, closed, store: Store::default() })
     }
 
     fn take(&mut self) -> Result<bool, String> {
@@ -301,6 +301,15 @@ impl GraphicsCapture {
                 .map_err(text)?;
         }
         Ok(true)
+    }
+}
+
+impl Drop for GraphicsCapture {
+    /// Close stops capture and frees the pool's buffers now, rather than whenever the last
+    /// reference goes, which WinRT's side can hold on to, keeping the capture border up.
+    fn drop(&mut self) {
+        let _ = self.session.Close();
+        let _ = self.pool.Close();
     }
 }
 

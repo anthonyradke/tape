@@ -335,9 +335,14 @@ pub fn shutdown(app: &AppHandle) {
     let shared = app.state::<Shared>();
     shared.quitting.store(true, Ordering::Relaxed);
     state::send(app, &Command::Shutdown);
-    // Time for a recording to be finished off before the process goes.
+    // Time for a recording to be finished off before the process goes. The engine sends no status
+    // after Shutdown, so "finished" is its Saved event (which clears the path) or its exit.
     let until = Instant::now() + Duration::from_millis(1500);
-    while Instant::now() < until && shared.status.lock().unwrap().recording {
+    let writing = || {
+        let status = shared.status.lock().unwrap();
+        status.recording && status.recording_path.is_some() && !shared.engine_stopped.load(Ordering::Relaxed)
+    };
+    while Instant::now() < until && writing() {
         std::thread::sleep(Duration::from_millis(50));
     }
 }

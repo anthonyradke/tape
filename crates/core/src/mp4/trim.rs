@@ -17,6 +17,7 @@ use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use super::boxes::{bx, full, Put};
+use super::chapters;
 use super::faststart::{top_level, MAX_MOOV};
 
 /// Slack when comparing times, well under a frame at any rate tape records.
@@ -311,52 +312,6 @@ pub struct Info {
     pub markers: Vec<f64>,
 }
 
-/// Nero chapters, `moov/udta/chpl`: (start in seconds, title). Version 1, as ffmpeg writes it, has
-/// four more bytes before the count. Starts are in 100 ns units.
-fn read_chapters(moov: &[u8]) -> Vec<(f64, String)> {
-    let parse = || -> io::Result<Vec<(f64, String)>> {
-        let kids = children(&moov[8..])?;
-        let Some(udta) = find(&kids, b"udta") else { return Ok(Vec::new()) };
-        let inner = children(udta.body)?;
-        let Some(chpl) = find(&inner, b"chpl") else { return Ok(Vec::new()) };
-        let (version, b) = full_body(chpl)?;
-        let mut at = if version == 1 { 4 } else { 0 };
-        let count = *b.get(at).ok_or_else(|| invalid("short box"))?;
-        at += 1;
-        let mut out = Vec::new();
-        for _ in 0..count {
-            let start = be64(b, at)?;
-            let len = *b.get(at + 8).ok_or_else(|| invalid("short box"))? as usize;
-            let title = b.get(at + 9..at + 9 + len).ok_or_else(|| invalid("short box"))?;
-            out.push((start as f64 / HUNDRED_NS, String::from_utf8_lossy(title).into_owned()));
-            at += 9 + len;
-        }
-        Ok(out)
-    };
-    parse().unwrap_or_default()
-}
-
-const HUNDRED_NS: f64 = 10_000_000.0;
-
-/// The `chpl` for `chapters`, in ffmpeg's version 1 layout.
-fn write_chapters(o: &mut Vec<u8>, chapters: &[(f64, String)]) {
-    full(o, b"chpl", 1, 0, |o| {
-        o.u32(0);
-        let count = chapters.len().min(255);
-        o.push(count as u8);
-        for (start, title) in &chapters[..count] {
-            o.u64((start.max(0.0) * HUNDRED_NS).round() as u64);
-            // At most 255 bytes, cut on a character boundary.
-            let mut end = title.len().min(255);
-            while !title.is_char_boundary(end) {
-                end -= 1;
-            }
-            o.push(end as u8);
-            o.extend_from_slice(&title.as_bytes()[..end]);
-        }
-    });
-}
-
 /// The chapters a cut from `begin` to `finish` keeps, moved to its start: one at zero for the
 /// chapter already playing at `begin`, then every one that starts inside.
 fn chapters_between(chapters: &[(f64, String)], begin: f64, finish: f64) -> Vec<(f64, String)> {
@@ -372,7 +327,7 @@ pub fn info(path: &Path) -> io::Result<Info> {
     let duration = video.samples.iter().map(|s| at(s) + s.duration as f64 / video.timescale as f64).fold(0.0, f64::max);
     let keyframes = video.samples.iter().filter(|s| s.key).map(at).map(|t| t.max(0.0)).collect();
     // A chapter at the very start or end marks nothing a cut could use.
-    let markers = read_chapters(&movie.moov).into_iter().map(|c| c.0).filter(|&t| t > EPSILON && t < duration - EPSILON).collect();
+    let markers = chapters::from_moov(&movie.moov).into_iter().map(|c| c.0).filter(|&t| t > EPSILON && t < duration - EPSILON).collect();
     Ok(Info { duration, keyframes, markers })
 }
 
@@ -508,7 +463,7 @@ pub fn trim(from: &Path, to: &Path, start: f64, end: f64) -> io::Result<(f64, f6
         }
     };
     let ftyp = movie.ftyp.clone().unwrap_or_default();
-    let chapters = chapters_between(&read_chapters(&movie.moov), begin, finish);
+    let chapters = chapters_between(&chapters::from_moov(&movie.moov), begin, finish);
     place(&mut cuts, 0);
     let sized = new_moov(&movie, &cuts, wide, Some(&chapters))?.len() as u64;
     let data_at = ftyp.len() as u64 + sized + 16;
@@ -612,7 +567,7 @@ pub(super) fn new_moov(movie: &Movie, cuts: &[Cut], wide: bool, chapters: Option
         // A file without user data gets some only to carry chapters.
         if let Some(list) = chapters.filter(|l| !l.is_empty()) {
             if find(&kids, b"udta").is_none() {
-                bx(o, b"udta", |o| write_chapters(o, list));
+                bx(o, b"udta", |o| o.extend_from_slice(&chapters::chpl(list)));
             }
         }
     });
@@ -626,7 +581,7 @@ fn new_udta(o: &mut Vec<u8>, udta: &Child, chapters: &[(f64, String)]) -> io::Re
             o.extend_from_slice(c.whole);
         }
         if !chapters.is_empty() {
-            write_chapters(o, chapters);
+            o.extend_from_slice(&chapters::chpl(chapters));
         }
     });
     Ok(())
@@ -942,8 +897,8 @@ mod tests {
     fn chapters_round_trip_and_follow_the_cut() {
         let list = vec![(0.0, "Start".to_string()), (2.5, "Ace".to_string()), (7.25, "é".repeat(200))];
         let mut moov = Vec::new();
-        bx(&mut moov, b"moov", |o| bx(o, b"udta", |o| write_chapters(o, &list)));
-        let read = read_chapters(&moov);
+        bx(&mut moov, b"moov", |o| o.extend_from_slice(&chapters::udta(&list)));
+        let read = chapters::from_moov(&moov);
         assert_eq!(read.len(), 3);
         assert_eq!(read[1], (2.5, "Ace".to_string()));
         assert_eq!(read[2].1, "é".repeat(127), "cut to 255 bytes on a character boundary");

@@ -148,7 +148,6 @@ fn watch(app: &AppHandle, mut child: Child, alarm: &mut Alarm) -> String {
     let shared = app.state::<Shared>();
     let stdout = child.stdout.take().unwrap();
     *shared.engine_stdin.lock().unwrap() = child.stdin.take();
-    shared.engine_generation.fetch_add(1, Ordering::Relaxed);
 
     let (tx, rx) = channel();
     std::thread::spawn(move || {

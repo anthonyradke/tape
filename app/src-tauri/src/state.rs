@@ -2,7 +2,7 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::ChildStdin;
-use std::sync::atomic::{AtomicBool, AtomicU32};
+use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 
 use serde::Serialize;
@@ -44,7 +44,6 @@ pub struct Shared {
     pub quitting: AtomicBool,
     /// The supervisor has finished and no engine is running.
     pub engine_stopped: AtomicBool,
-    pub engine_generation: AtomicU32,
     pub self_test: Mutex<Option<String>>,
     pub log_path: PathBuf,
     pub settings_path: PathBuf,
@@ -85,7 +84,6 @@ impl Shared {
             recording_wanted: AtomicBool::new(false),
             quitting: AtomicBool::new(false),
             engine_stopped: AtomicBool::new(false),
-            engine_generation: AtomicU32::new(0),
             self_test: Mutex::new(None),
             log_path,
             settings_path,

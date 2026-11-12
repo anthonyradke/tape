@@ -69,8 +69,16 @@ impl Shared {
         if damaged {
             let _ = fs::copy(&settings_path, settings_path.with_extension("json.bad"));
         }
+        #[cfg(windows)]
+        if let Some(videos) = known_videos_folder() {
+            tape_core::naming::set_videos_folder(videos);
+        }
+        let mut settings = settings;
         if settings.folder.is_empty() {
-            tape_core::naming::rename_old_default_folder();
+            match tape_core::naming::earlier_folder() {
+                Some(earlier) => settings.folder = earlier.display().to_string(),
+                None => tape_core::naming::rename_old_default_folder(),
+            }
         }
         let thumbnails = app.path().app_cache_dir().unwrap_or_else(|_| dir.clone()).join("thumbnails");
         let log_path = app.path().app_log_dir().unwrap_or(dir).join("engine.log");
@@ -112,10 +120,27 @@ impl Shared {
     }
 }
 
+/// The Videos folder from Windows, wherever the user has moved it.
+#[cfg(windows)]
+fn known_videos_folder() -> Option<PathBuf> {
+    use windows::Win32::System::Com::CoTaskMemFree;
+    use windows::Win32::UI::Shell::{SHGetKnownFolderPath, FOLDERID_Videos, KF_FLAG_DEFAULT};
+    unsafe {
+        let raw = SHGetKnownFolderPath(&FOLDERID_Videos, KF_FLAG_DEFAULT, None).ok()?;
+        let path = raw.to_string().ok();
+        CoTaskMemFree(Some(raw.0 as *const _));
+        path.filter(|p| !p.is_empty()).map(PathBuf::from)
+    }
+}
+
 /// The settings as the engine gets them: without the share server and its key, which it has no
-/// use for and which then can't end up anywhere it writes.
+/// use for and which then can't end up anywhere it writes. An empty folder is filled in, since
+/// only this process knows where Windows keeps Videos.
 pub fn for_engine(settings: &Settings) -> Command {
     let mut settings = settings.clone();
+    if settings.folder.is_empty() {
+        settings.folder = tape_core::naming::default_folder().display().to_string();
+    }
     settings.share_server.clear();
     settings.share_key.clear();
     Command::Configure { settings: Box::new(settings) }

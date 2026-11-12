@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use chrono::{DateTime, Local, Timelike};
 
@@ -22,22 +23,59 @@ fn is_reserved(name: &str) -> bool {
     RESERVED.iter().any(|r| r.to_lowercase() == base.to_lowercase())
 }
 
-/// Videos\Tape in the user's profile.
-pub fn default_folder() -> PathBuf {
+/// The user's Videos folder as Windows has it, which can be moved to another drive or into
+/// OneDrive. This crate can't ask Windows, so the app looks it up (FOLDERID_Videos) at startup.
+static VIDEOS: OnceLock<PathBuf> = OnceLock::new();
+
+/// Sets the Videos folder `default_folder` goes by. Only the first call counts.
+pub fn set_videos_folder(path: PathBuf) {
+    let _ = VIDEOS.set(path);
+}
+
+/// %USERPROFILE%\Videos, where Videos is unless it was moved.
+fn profile_videos() -> PathBuf {
     let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"));
-    home.map(PathBuf::from).unwrap_or_default().join("Videos").join("Tape")
+    home.map(PathBuf::from).unwrap_or_default().join("Videos")
+}
+
+/// Videos\Tape: in the folder `set_videos_folder` gave, or else in the user's profile.
+pub fn default_folder() -> PathBuf {
+    VIDEOS.get().cloned().unwrap_or_else(profile_videos).join("Tape")
 }
 
 /// Earlier versions used Videos\tape. Windows would treat that as the same folder and keep the old
 /// spelling, so it's renamed once.
 pub fn rename_old_default_folder() {
-    let folder = default_folder();
+    rename_old_spelling(&default_folder());
+}
+
+fn rename_old_spelling(folder: &Path) {
     let (Some(parent), Some(wanted)) = (folder.parent(), folder.file_name()) else { return };
     let Ok(entries) = std::fs::read_dir(parent) else { return };
     let old = entries.flatten().map(|e| e.file_name()).find(|n| n != wanted && n.eq_ignore_ascii_case(wanted));
     if let Some(old) = old {
-        let _ = std::fs::rename(parent.join(old), &folder);
+        let _ = std::fs::rename(parent.join(old), folder);
     }
+}
+
+/// Versions before the Videos folder was looked up saved to %USERPROFILE%\Videos\Tape even with
+/// Videos moved elsewhere. If clips are there, that folder is kept, so none of them seem to vanish.
+pub fn earlier_folder() -> Option<PathBuf> {
+    earlier_folder_in(VIDEOS.get()?, &profile_videos())
+}
+
+/// `earlier_folder` with both Videos folders given. None when they are the same folder, or the old
+/// Tape folder is missing or empty.
+pub fn earlier_folder_in(videos: &Path, profile_videos: &Path) -> Option<PathBuf> {
+    // Windows paths compare without case, and one may have been given with a trailing separator.
+    let key = |p: &Path| p.to_string_lossy().trim_end_matches(['\\', '/']).to_lowercase();
+    if key(videos) == key(profile_videos) {
+        return None;
+    }
+    let old = profile_videos.join("Tape");
+    rename_old_spelling(&old);
+    let has_files = std::fs::read_dir(&old).is_ok_and(|mut entries| entries.next().is_some());
+    has_files.then_some(old)
 }
 
 /// The scheme NVIDIA uses, so tools and habits built around it keep working:
@@ -220,5 +258,49 @@ mod tests {
         let clip = Path::new("/v/Tape/CS2/a.DVR.mp4");
         assert!(renamed_path(clip, "COM5").is_none());
         assert!(renamed_path(clip, "lpt1.txt").is_none());
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("tape-naming-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn clips_in_the_profile_videos_folder_are_kept_when_videos_has_moved() {
+        let dir = scratch("moved");
+        let (profile, moved) = (dir.join("profile").join("Videos"), dir.join("OneDrive").join("Videos"));
+        std::fs::create_dir_all(&moved).unwrap();
+        // Nothing saved there yet: the moved folder is used.
+        assert_eq!(earlier_folder_in(&moved, &profile), None);
+        std::fs::create_dir_all(profile.join("Tape")).unwrap();
+        assert_eq!(earlier_folder_in(&moved, &profile), None, "an empty folder isn't worth keeping");
+        std::fs::create_dir_all(profile.join("Tape").join("Fortnite")).unwrap();
+        assert_eq!(earlier_folder_in(&moved, &profile), Some(profile.join("Tape")));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn videos_where_it_always_was_needs_nothing_kept() {
+        let dir = scratch("same");
+        let profile = dir.join("Videos");
+        std::fs::create_dir_all(profile.join("Tape").join("CS2")).unwrap();
+        let spelled = PathBuf::from(format!("{}{}", profile.display().to_string().to_uppercase(), std::path::MAIN_SEPARATOR));
+        assert_eq!(earlier_folder_in(&profile, &profile), None);
+        assert_eq!(earlier_folder_in(&spelled, &profile), None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_kept_folder_gets_the_new_spelling() {
+        let dir = scratch("spelling");
+        let profile = dir.join("Videos");
+        std::fs::create_dir_all(profile.join("tape").join("CS2")).unwrap();
+        let kept = earlier_folder_in(&dir.join("D-Videos"), &profile).unwrap();
+        assert_eq!(kept, profile.join("Tape"));
+        let names: Vec<_> = std::fs::read_dir(&profile).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(names, ["Tape"]);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

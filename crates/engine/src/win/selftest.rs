@@ -285,6 +285,53 @@ fn check_audio(out: &mut String, label: &str, source: Source) {
     }
 }
 
+/// Process loopback, which keeps tape's own sounds out of game audio. Two streams listen while this
+/// process plays the tone: one for this process only, which should hear it, and one for everything
+/// else, which shouldn't (unless something else is playing at the same time).
+fn check_process_loopback(out: &mut String) {
+    let clock = Clock::new();
+    let pid = std::process::id();
+    let opened = wasapi::Input::open_process_loopback(pid, true, clock)
+        .and_then(|only| Ok((only, wasapi::Input::open_process_loopback(pid, false, clock)?)));
+    let (mut only, mut others) = match opened {
+        Ok(both) => both,
+        Err(e) => {
+            line!(out, "  Process loopback: FAILED, {e} (game audio falls back to the whole output)");
+            return;
+        }
+    };
+    let tone = test_tone();
+    let _ = unsafe { PlaySoundW(PCWSTR(tone.as_ptr().cast()), None, SND_MEMORY | SND_ASYNC | SND_NODEFAULT) };
+    let (mut heard, mut left_out, mut samples) = (0.0f32, 0.0f32, 0);
+    let until = Instant::now() + Duration::from_secs(1);
+    let mut failed = None;
+    while Instant::now() < until && failed.is_none() {
+        for (input, loudest) in [(&mut only, &mut heard), (&mut others, &mut left_out)] {
+            let mut got: Vec<AudioBlock> = Vec::new();
+            if let Err(e) = input.read(&mut got) {
+                failed = Some(e);
+            }
+            for b in got {
+                samples += b.stereo.len() / 2;
+                *loudest = loudest.max(peak(&b.stereo));
+            }
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    unsafe {
+        let _ = PlaySoundW(PCWSTR::null(), None, SND_PURGE);
+    }
+    match failed {
+        Some(e) => {
+            line!(out, "  Process loopback: FAILED reading, {e}");
+        }
+        None => {
+            let verdict = if heard < 0.01 { "tone not heard (no output device?)" } else if left_out < heard / 4.0 { "tape's own sound left out" } else { "tone also heard with tape left out, or something else is playing" };
+            line!(out, "  Process loopback: OK, {}, {samples} samples, tone peak {heard:.3} from tape alone, {left_out:.3} with tape left out: {verdict}", only.name());
+        }
+    }
+}
+
 /// Encodes a 1 kHz tone and writes it as ADTS, which any decoder can read, so a build machine can
 /// check that what the encoder makes is real AAC of the format the MP4 declares.
 fn check_aac(out: &mut String, backend: &Windows) {
@@ -406,6 +453,7 @@ pub fn report(backend: &Windows, settings: &Settings) -> String {
 
     line!(out, "\nAudio");
     check_audio(&mut out, "Output loopback", Source::System);
+    check_process_loopback(&mut out);
     check_audio(&mut out, "Microphone", Source::Mic);
     check_aac(&mut out, backend);
     let (outs, ins) = (wasapi::devices(Source::System), wasapi::devices(Source::Mic));

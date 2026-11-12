@@ -111,6 +111,10 @@ pub trait AudioInput {
     fn is_stale(&self) -> bool {
         false
     }
+    /// Game audio with tape's own sounds left out, from `Backend::open_excluding`.
+    fn excludes_tape(&self) -> bool {
+        false
+    }
 }
 
 pub trait AacEncoder {
@@ -130,6 +134,11 @@ pub trait Backend: Send + Sync + 'static {
     /// Blocks until `ctx.stop` is set or the pipeline fails.
     fn run_video(&self, settings: &Settings, ctx: &VideoContext) -> Result<(), String>;
     fn open_audio(&self, source: Source, device: &str, clock: Clock) -> Result<Box<dyn AudioInput>, String>;
+    /// Game audio from the default output with what `pid` and the processes it started play left
+    /// out. An error where that can't be done, and device loopback is used instead.
+    fn open_excluding(&self, _pid: u32, _clock: Clock) -> Result<Box<dyn AudioInput>, String> {
+        Err("not supported here".into())
+    }
     fn aac_encoder(&self) -> Result<Box<dyn AacEncoder>, String>;
     /// Called on each audio thread before it opens anything.
     fn audio_thread_setup(&self) {}

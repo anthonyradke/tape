@@ -135,6 +135,9 @@ pub fn end_with_tape(_child: &Child) {}
 fn spawn_engine(shared: &Shared) -> std::io::Result<Child> {
     let mut command = own_process()?;
     command.arg("--engine").arg(&shared.log_path).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+    // Whose sounds to leave out of game audio: this process and everything it started, the
+    // player's WebView2 processes among them.
+    command.env("TAPE_APP_PID", std::process::id().to_string());
     command.spawn()
 }
 

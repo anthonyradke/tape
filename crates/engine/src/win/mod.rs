@@ -136,6 +136,10 @@ impl Backend for Windows {
         Ok(Box::new(wasapi::Input::open(source, device, clock)?))
     }
 
+    fn open_excluding(&self, pid: u32, clock: Clock) -> Result<Box<dyn AudioInput>, String> {
+        Ok(Box::new(wasapi::Input::open_process_loopback(pid, false, clock)?))
+    }
+
     fn aac_encoder(&self) -> Result<Box<dyn AacEncoder>, String> {
         Ok(Box::new(aac::Aac::new()?))
     }

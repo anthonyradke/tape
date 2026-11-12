@@ -40,6 +40,8 @@ function renderSettings() {
     ${row("Game audio", select("systemAudio", deviceOptions(p.outputs, s.systemAudio, "Off"), s.systemAudio))}
     <div class="level"><i id="l-system"></i></div>
     ${s.systemAudio ? row("Volume", `<input type="range" data-range="systemVolume" min="0" max="200" step="5" value="${s.systemVolume}" aria-label="Game audio volume"><span class="num" id="n-systemVolume">${s.systemVolume}%</span>`) : ""}
+    ${s.systemAudio === "default" ? row("Leave out tape's sounds", toggle("excludeTapeAudio", s.excludeTapeAudio, "Leave out tape's sounds")) : ""}
+    ${exclusionNote()}
     ${row("Microphone", select("microphone", deviceOptions(p.inputs, s.microphone, "Off"), s.microphone))}
     <div class="level"><i id="l-mic"></i></div>
     ${s.microphone ? row("Volume", `<input type="range" data-range="micVolume" min="0" max="200" step="5" value="${s.micVolume}" aria-label="Microphone volume"><span class="num" id="n-micVolume">${s.micVolume}%</span>`) : ""}
@@ -74,6 +76,17 @@ function renderSettings() {
   const top = scroller.scrollTop;
   $("settings").innerHTML = html.join("");
   scroller.scrollTop = top;
+}
+
+// Windows can only leave tape out of the default device's mix, and only from Windows 10 2004 on.
+function exclusionNote() {
+  const s = view.settings;
+  const system = view.status.system;
+  if (!s.systemAudio) return "";
+  if (s.systemAudio !== "default") return `<p class="note">tape's own sounds and clips played in it are only left out of game audio with Windows default as the device.</p>`;
+  if (!s.excludeTapeAudio) return "";
+  if (system?.running && !system.excludesTape) return `<p class="note warn">Windows didn't let tape leave its own sounds out, so its cues and clips played here are in game audio. The log says why.</p>`;
+  return `<p class="note">The save and record sounds, and clips played in tape, stay out of game audio.</p>`;
 }
 
 function renderSharing() {

@@ -63,6 +63,9 @@ pub struct Settings {
     pub replay_seconds: u32,
     /// Output device to record: "default" follows Windows, "" records none, otherwise an id.
     pub system_audio: String,
+    /// Leave tape's own sounds (its cues and clips played in it) out of game audio. Windows can
+    /// only do that for the default output device, so a chosen device ignores this.
+    pub exclude_tape_audio: bool,
     /// Input device, same convention.
     pub microphone: String,
     pub system_volume: u32,
@@ -94,6 +97,7 @@ impl Default for Settings {
             replay: true,
             replay_seconds: 120,
             system_audio: FOLLOW_DEFAULT.into(),
+            exclude_tape_audio: true,
             microphone: NO_DEVICE.into(),
             system_volume: 100,
             mic_volume: 100,
@@ -197,6 +201,7 @@ impl Settings {
     /// Whether changing from `other` means reopening audio devices.
     pub fn audio_differs(&self, other: &Settings) -> bool {
         self.system_audio != other.system_audio
+            || self.exclude_tape_audio != other.exclude_tape_audio
             || self.microphone != other.microphone
             || self.separate_tracks != other.separate_tracks
     }
@@ -373,6 +378,7 @@ mod tests {
         assert!(!a.video_differs(&Settings { replay_seconds: 30, sounds: false, ..a.clone() }));
         assert!(a.video_differs(&Settings { bitrate_mbps: 10, ..a.clone() }));
         assert!(a.audio_differs(&Settings { microphone: "x".into(), ..a.clone() }));
+        assert!(a.audio_differs(&Settings { exclude_tape_audio: false, ..a.clone() }));
         assert!(!a.audio_differs(&Settings { mic_volume: 50, mic_delay_ms: 80, ..a.clone() }));
     }
 }

@@ -468,3 +468,28 @@ fn quality_counters_report_dropped_frames_and_audio_glitches() {
     let fps = s["video"]["fps"].as_f64().unwrap();
     assert!((50.0..60.0).contains(&fps), "{fps}");
 }
+
+#[test]
+fn tapes_own_sounds_are_left_out_of_default_game_audio_where_windows_allows() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let excludes = |s: &Value| s["system"]["excludesTape"].as_bool().unwrap();
+    let mut e = Engine::start("exclude", &[]);
+    e.configure(json!({"replaySeconds": 5}));
+    let s = e.wait_status(5, "game audio running", |s| s["system"]["running"] == true);
+    assert!(excludes(&s), "the default device leaves tape out");
+    // Windows can only leave a process out of the default device's mix.
+    e.configure(json!({"replaySeconds": 5, "systemAudio": "out"}));
+    let s = e.wait_status(5, "chosen device running", |s| s["system"]["running"] == true && !excludes(s));
+    assert_eq!(s["system"]["problem"], Value::Null);
+    e.configure(json!({"replaySeconds": 5, "excludeTapeAudio": false}));
+    e.wait_status(5, "whole output", |s| s["system"]["running"] == true && !excludes(s));
+
+    // Too old a Windows: the whole output is recorded instead, with nothing reported as wrong.
+    let mut old = Engine::start("exclude-old", &[("TAPE_FAKE_NO_EXCLUSION", "1")]);
+    old.configure(json!({"replaySeconds": 5}));
+    let s = old.wait_status(5, "game audio running", |s| s["system"]["running"] == true);
+    assert!(!excludes(&s));
+    assert_eq!(s["system"]["problem"], Value::Null);
+}

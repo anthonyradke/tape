@@ -43,6 +43,8 @@ pub struct AudioSource {
     pub running: bool,
     pub peak: f32,
     pub problem: Option<String>,
+    /// Game audio with tape's own sounds left out.
+    pub excludes_tape: bool,
 }
 
 /// Things that went wrong without stopping anything, which show in clips as stutter or crackle.

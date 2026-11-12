@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use tape_core::audio::{add_scaled, limit, peak, to_i16, Timeline, MIX_DELAY};
 use tape_core::ipc::AudioSource;
 use tape_core::packet::{AudioFormat, AAC_FRAME, AUDIO_RATE};
-use tape_core::settings::{Settings, MAX_MIC_DELAY_MS, NO_DEVICE};
+use tape_core::settings::{Settings, FOLLOW_DEFAULT, MAX_MIC_DELAY_MS, NO_DEVICE};
 
 use crate::backend::{AudioBlock, AudioContext, AudioInput, AudioShared, Backend, Source};
 use crate::log;
@@ -17,6 +17,9 @@ use crate::log;
 const ASC_AAC_LC_48K_STEREO: [u8; 2] = [0x11, 0x90];
 const RETRY: Duration = Duration::from_secs(2);
 const POLL: Duration = Duration::from_millis(5);
+/// Set by the app to its own process id, whose sounds are left out of game audio. The engine is
+/// one of its children, so on its own it would only know itself.
+const APP_PID: &str = "TAPE_APP_PID";
 /// Past this much backlog the thread was stalled, and it skips ahead rather than racing through
 /// audio that has nothing in it.
 const MAX_BEHIND: i64 = 48_000 * 2;
@@ -44,6 +47,8 @@ struct Channel {
     block: Vec<f32>,
     /// What `glitches` has already been told about the timeline.
     counted: u64,
+    /// The process whose sounds to leave out, while that still works.
+    exclude: Option<u32>,
 }
 
 impl Channel {
@@ -57,6 +62,22 @@ impl Channel {
             blocks: Vec::new(),
             block: vec![0.0; AAC_FRAME * 2],
             counted: 0,
+            exclude: None,
+        }
+    }
+
+    /// Opens the device, leaving tape out where that's wanted. If that can't be done while the
+    /// device itself opens fine, Windows can't do it at all, and it isn't tried again.
+    fn open(&mut self, backend: &dyn Backend, ctx: &AudioContext) -> Result<Box<dyn AudioInput>, String> {
+        let Some(pid) = self.exclude else { return backend.open_audio(self.source, &self.device, ctx.clock) };
+        match backend.open_excluding(pid, ctx.clock) {
+            Ok(input) => Ok(input),
+            Err(e) => {
+                let input = backend.open_audio(self.source, &self.device, ctx.clock)?;
+                log!("audio {:?}: can't leave tape's sounds out ({e}), recording the whole output", self.source);
+                self.exclude = None;
+                Ok(input)
+            }
         }
     }
 
@@ -92,10 +113,11 @@ impl Channel {
         }
         if self.input.is_none() && Instant::now() >= self.next_open {
             self.next_open = Instant::now() + RETRY;
-            match backend.open_audio(self.source, &self.device, ctx.clock) {
+            match self.open(backend, ctx) {
                 Ok(input) => {
                     log!("audio {:?}: opened {}", self.source, input.describe());
-                    let status = AudioSource { name: input.name(), running: true, peak: 0.0, problem: None };
+                    let excludes_tape = input.excludes_tape();
+                    let status = AudioSource { name: input.name(), running: true, peak: 0.0, problem: None, excludes_tape };
                     *self.status(&ctx.shared).lock().unwrap() = Some(status);
                     self.input = Some(input);
                 }
@@ -140,7 +162,12 @@ pub fn run(backend: &dyn Backend, settings: &Settings, ctx: &AudioContext) -> Re
     }
     let mut channels = Vec::new();
     if settings.system_audio != NO_DEVICE {
-        channels.push(Channel::new(Source::System, &settings.system_audio));
+        let mut system = Channel::new(Source::System, &settings.system_audio);
+        // Windows only offers it for the default device, so a chosen one is recorded whole.
+        if settings.system_audio == FOLLOW_DEFAULT && settings.exclude_tape_audio {
+            system.exclude = Some(app_pid());
+        }
+        channels.push(system);
     }
     if settings.microphone != NO_DEVICE {
         channels.push(Channel::new(Source::Mic, &settings.microphone));
@@ -241,6 +268,10 @@ impl SilenceMeter {
         *self = SilenceMeter { packets: 0, silent: 0, since: now, reports: self.reports + 1 };
         Some(line)
     }
+}
+
+fn app_pid() -> u32 {
+    std::env::var(APP_PID).ok().and_then(|v| v.parse().ok()).unwrap_or_else(std::process::id)
 }
 
 /// The mic delay setting in samples.

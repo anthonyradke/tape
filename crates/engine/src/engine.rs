@@ -267,6 +267,7 @@ impl Engine {
             now.capture = self.settings.capture;
             now.show_cursor = self.settings.show_cursor;
             now.system_audio = self.settings.system_audio.clone();
+            now.exclude_tape_audio = self.settings.exclude_tape_audio;
             now.microphone = self.settings.microphone.clone();
             now.separate_tracks = self.settings.separate_tracks;
             self.deferred = Some(new);

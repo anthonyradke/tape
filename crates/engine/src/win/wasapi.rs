@@ -1,17 +1,23 @@
-//! WASAPI shared-mode capture: loopback from an output device, or a microphone.
+//! WASAPI shared-mode capture: loopback from an output device, process loopback that leaves tape's
+//! own sounds out, or a microphone.
 
 use std::cell::Cell;
+use std::sync::mpsc::{channel, Sender};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use tape_core::audio::{to_stereo, Resampler};
 use tape_core::ipc::AudioDevice;
 use tape_core::packet::{from_micros, AUDIO_RATE};
 use tape_core::settings::FOLLOW_DEFAULT;
-use windows::core::{GUID, PWSTR};
+use windows::core::{implement, Interface, GUID, PCWSTR, PWSTR};
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
+use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::Media::Audio::*;
-use windows::Win32::System::Com::StructuredStorage::PropVariantClear;
-use windows::Win32::System::Com::{CoCreateInstance, CoTaskMemFree, CLSCTX_ALL, STGM_READ};
+use windows::Win32::System::Com::StructuredStorage::{PropVariantClear, PROPVARIANT};
+use windows::Win32::System::Com::{CoCreateInstance, CoTaskMemFree, BLOB, CLSCTX_ALL, STGM_READ};
+use windows::Win32::System::Threading::CreateEventW;
+use windows::Win32::System::Variant::VT_BLOB;
 use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 
 use super::com_init;
@@ -100,6 +106,16 @@ enum Sample {
     Int32,
 }
 
+/// What a stream delivers.
+struct Layout {
+    sample: Sample,
+    channels: usize,
+    block_align: usize,
+    rate: u32,
+    /// For the log.
+    text: String,
+}
+
 pub struct Input {
     source: Source,
     enumerator: IMMDeviceEnumerator,
@@ -124,6 +140,68 @@ pub struct Input {
     silence: SilenceMeter,
     /// Packets read so far. The first one is often flagged as a discontinuity, which means nothing.
     packets: u64,
+    /// Process loopback wants an event to signal, though packets are polled for here.
+    event: Option<HANDLE>,
+    /// Process loopback leaving tape's processes out.
+    excludes_tape: bool,
+}
+
+/// Told when an asynchronous activation finishes. Windows calls it on a thread of its own, so it
+/// has to be agile, which `#[implement]` objects are unless asked otherwise.
+#[implement(IActivateAudioInterfaceCompletionHandler)]
+struct Activated {
+    done: Mutex<Option<Sender<()>>>,
+}
+
+impl IActivateAudioInterfaceCompletionHandler_Impl for Activated_Impl {
+    fn ActivateCompleted(&self, _operation: windows_core::Ref<'_, IActivateAudioInterfaceAsyncOperation>) -> windows::core::Result<()> {
+        // The result is read from the operation by the thread that asked, once this has said so.
+        if let Some(done) = self.done.lock().unwrap().take() {
+            let _ = done.send(());
+        }
+        Ok(())
+    }
+}
+
+/// How long activation may take. It answers in milliseconds; this only guards against a hang.
+const ACTIVATE_LIMIT: Duration = Duration::from_secs(5);
+
+/// A process loopback client for what `pid` and the processes it started play, or for everything
+/// on the default output but that, as in Microsoft's ApplicationLoopback sample. Needs Windows 10
+/// 2004 (build 19041); earlier versions fail the activation.
+fn process_loopback(pid: u32, mode: PROCESS_LOOPBACK_MODE) -> Result<IAudioClient, String> {
+    let text = |e: windows::core::Error| e.to_string();
+    // Boxed so that if activation never finishes, the parameters it may still read can be left behind.
+    let mut params = Box::new(AUDIOCLIENT_ACTIVATION_PARAMS {
+        ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
+        Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
+            ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
+                TargetProcessId: pid,
+                ProcessLoopbackMode: mode,
+            },
+        },
+    });
+    // A VT_BLOB pointing at the parameters, which only have to live until activation is done.
+    let mut blob = PROPVARIANT::default();
+    unsafe {
+        let inner = &mut *blob.Anonymous.Anonymous;
+        inner.vt = VT_BLOB;
+        inner.Anonymous.blob = BLOB { cbSize: size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32, pBlobData: (&mut *params as *mut AUDIOCLIENT_ACTIVATION_PARAMS).cast() };
+    }
+    let (done, finished) = channel();
+    let handler: IActivateAudioInterfaceCompletionHandler = Activated { done: Mutex::new(Some(done)) }.into();
+    let operation = unsafe {
+        ActivateAudioInterfaceAsync(VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, &IAudioClient::IID, Some(&blob), &handler)
+    }
+    .map_err(text)?;
+    if finished.recv_timeout(ACTIVATE_LIMIT).is_err() {
+        std::mem::forget(params);
+        return Err("process loopback activation never finished".into());
+    }
+    let (mut result, mut client) = (windows::core::HRESULT(0), None);
+    unsafe { operation.GetActivateResult(&mut result, &mut client) }.map_err(text)?;
+    result.ok().map_err(text)?;
+    client.ok_or_else(|| "process loopback gave no client".to_string())?.cast::<IAudioClient>().map_err(text)
 }
 
 impl Input {
@@ -169,30 +247,90 @@ impl Input {
             let started = client.Initialize(AUDCLNT_SHAREMODE_SHARED, flags, BUFFER_100NS, 0, format, None);
             CoTaskMemFree(Some(format as *const _));
             started.map_err(|e| format!("{e} ({name}, {format_text})"))?;
-            let capture: IAudioCaptureClient = client.GetService().map_err(text)?;
-            client.Start().map_err(text)?;
-            Ok(Input {
-                source,
-                enumerator,
-                client,
-                capture,
-                name,
-                following,
-                checked: Cell::new(Instant::now()),
-                clock,
-                sample,
-                channels,
-                block_align,
-                rate,
-                resampler: Resampler::new(rate, AUDIO_RATE),
-                origin_100ns: qpc_100ns() - clock.now_us() * 10,
-                pcm: Vec::new(),
-                stereo: Vec::new(),
-                format: format_text,
-                silence: SilenceMeter::new(Instant::now()),
-                packets: 0,
-            })
+            let layout = Layout { sample, channels, block_align, rate, text: format_text };
+            Input::start(source, enumerator, client, name, following, clock, layout)
         }
+    }
+
+    /// Game audio as process loopback: everything on the default output except what `pid` and
+    /// the processes it started play, or only that with `include`. The default device's name is
+    /// what shows, since that is what's being heard.
+    pub fn open_process_loopback(pid: u32, include: bool, clock: Clock) -> Result<Input, String> {
+        let enumerator = enumerator()?;
+        let endpoint = default_device(&enumerator, Source::System)?;
+        let following = device_id(&endpoint);
+        let name = friendly_name(&endpoint);
+        let mode = if include { PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE } else { PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE };
+        let client = process_loopback(pid, mode)?;
+        // There's no mix format to ask for: the stream takes the one it's given and converts to it.
+        let format = WAVEFORMATEX {
+            wFormatTag: TAG_PCM,
+            nChannels: 2,
+            nSamplesPerSec: AUDIO_RATE,
+            nAvgBytesPerSec: AUDIO_RATE * 4,
+            nBlockAlign: 4,
+            wBitsPerSample: 16,
+            cbSize: 0,
+        };
+        let text = |e: windows::core::Error| e.to_string();
+        unsafe {
+            let flags = AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM;
+            client.Initialize(AUDCLNT_SHAREMODE_SHARED, flags, BUFFER_100NS, 0, &format, None).map_err(|e| format!("{e} (process loopback)"))?;
+            let event = CreateEventW(None, false, false, PCWSTR::null()).map_err(text)?;
+            if let Err(e) = client.SetEventHandle(event) {
+                let _ = CloseHandle(event);
+                return Err(text(e));
+            }
+            let what = if include { "only" } else { "leaving out" };
+            let layout = Layout { sample: Sample::Int16, channels: 2, block_align: 4, rate: AUDIO_RATE, text: format!("process loopback {what} process {pid}, int 16 bit, {AUDIO_RATE} Hz, 2 channels") };
+            let mut input = match Input::start(Source::System, enumerator, client, name, following, clock, layout) {
+                Ok(input) => input,
+                Err(e) => {
+                    let _ = CloseHandle(event);
+                    return Err(e);
+                }
+            };
+            input.event = Some(event);
+            input.excludes_tape = !include;
+            Ok(input)
+        }
+    }
+
+    fn start(
+        source: Source,
+        enumerator: IMMDeviceEnumerator,
+        client: IAudioClient,
+        name: String,
+        following: Option<String>,
+        clock: Clock,
+        layout: Layout,
+    ) -> Result<Input, String> {
+        let text = |e: windows::core::Error| e.to_string();
+        let capture: IAudioCaptureClient = unsafe { client.GetService() }.map_err(text)?;
+        unsafe { client.Start() }.map_err(text)?;
+        Ok(Input {
+            source,
+            enumerator,
+            client,
+            capture,
+            name,
+            following,
+            checked: Cell::new(Instant::now()),
+            clock,
+            sample: layout.sample,
+            channels: layout.channels,
+            block_align: layout.block_align,
+            rate: layout.rate,
+            resampler: Resampler::new(layout.rate, AUDIO_RATE),
+            origin_100ns: qpc_100ns() - clock.now_us() * 10,
+            pcm: Vec::new(),
+            stereo: Vec::new(),
+            format: layout.text,
+            silence: SilenceMeter::new(Instant::now()),
+            packets: 0,
+            event: None,
+            excludes_tape: false,
+        })
     }
 
     fn decode(&mut self, data: *const u8, frames: usize, silent: bool) {
@@ -224,6 +362,10 @@ impl AudioInput for Input {
         format!("{}, {}", self.name, self.format)
     }
 
+    fn excludes_tape(&self) -> bool {
+        self.excludes_tape
+    }
+
     fn read(&mut self, out: &mut Vec<AudioBlock>) -> Result<(), String> {
         loop {
             let waiting = unsafe { self.capture.GetNextPacketSize() }.map_err(|e| format!("Device lost: {e}"))?;
@@ -243,11 +385,10 @@ impl AudioInput for Input {
 
             // Some drivers leave the timestamp empty, or flag it as wrong, after a glitch.
             let bad_time = qpc == 0 || flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32 != 0;
-            let at_us = if bad_time {
-                self.clock.now_us() - frames as i64 * 1_000_000 / self.rate as i64
-            } else {
-                (qpc as i64 - self.origin_100ns) / 10
-            };
+            let estimate = self.clock.now_us() - frames as i64 * 1_000_000 / self.rate as i64;
+            let stamped = (qpc as i64 - self.origin_100ns) / 10;
+            // A timestamp a second away from now is wrong whatever the driver says about it.
+            let at_us = if bad_time || (stamped - estimate).abs() > 1_000_000 { estimate } else { stamped };
             self.stereo.clear();
             to_stereo(&self.pcm, self.channels, &mut self.stereo);
             let mut stereo = Vec::with_capacity(self.stereo.len() + 16);
@@ -269,5 +410,8 @@ impl AudioInput for Input {
 impl Drop for Input {
     fn drop(&mut self) {
         let _ = unsafe { self.client.Stop() };
+        if let Some(event) = self.event.take() {
+            let _ = unsafe { CloseHandle(event) };
+        }
     }
 }

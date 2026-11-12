@@ -49,6 +49,8 @@ pub struct Fake {
     drop_every: u32,
     /// Deliver one block in every this many as overlapping the last, which the mixer has to cut.
     glitch_every: u32,
+    /// Leaving tape's sounds out of game audio fails, as before Windows 10 2004.
+    no_exclusion: bool,
 }
 
 impl Fake {
@@ -69,6 +71,7 @@ impl Fake {
             pause_after: number("TAPE_FAKE_PAUSE_AFTER"),
             drop_every: number("TAPE_FAKE_DROP_EVERY"),
             glitch_every: number("TAPE_FAKE_GLITCH_EVERY"),
+            no_exclusion: number("TAPE_FAKE_NO_EXCLUSION") != 0,
         }
     }
 }
@@ -79,11 +82,16 @@ struct Tone {
     fails: u32,
     glitch_every: u32,
     blocks: u32,
+    excludes_tape: bool,
 }
 
 impl AudioInput for Tone {
     fn name(&self) -> String {
         "Fake device".into()
+    }
+
+    fn excludes_tape(&self) -> bool {
+        self.excludes_tape
     }
 
     fn read(&mut self, out: &mut Vec<AudioBlock>) -> Result<(), String> {
@@ -202,7 +210,15 @@ impl Backend for Fake {
 
     fn open_audio(&self, _source: Source, _device: &str, clock: Clock) -> Result<Box<dyn AudioInput>, String> {
         let fails = self.audio_fails.swap(0, Ordering::Relaxed);
-        Ok(Box::new(Tone { clock, next: 0, fails, glitch_every: self.glitch_every, blocks: 0 }))
+        Ok(Box::new(Tone { clock, next: 0, fails, glitch_every: self.glitch_every, blocks: 0, excludes_tape: false }))
+    }
+
+    fn open_excluding(&self, _pid: u32, clock: Clock) -> Result<Box<dyn AudioInput>, String> {
+        if self.no_exclusion {
+            return Err("process loopback unavailable".into());
+        }
+        let fails = self.audio_fails.swap(0, Ordering::Relaxed);
+        Ok(Box::new(Tone { clock, next: 0, fails, glitch_every: self.glitch_every, blocks: 0, excludes_tape: true }))
     }
 
     fn aac_encoder(&self) -> Result<Box<dyn AacEncoder>, String> {

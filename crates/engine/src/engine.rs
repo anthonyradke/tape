@@ -471,6 +471,10 @@ impl Engine {
     }
 }
 
+fn replay_limit(ram: u64) -> u64 {
+    (ram as f64 * REPLAY_RAM_SHARE) as u64
+}
+
 #[cfg(windows)]
 fn total_ram_bytes() -> Option<u64> {
     crate::win::total_ram_bytes()
@@ -537,7 +541,7 @@ pub fn run(backend: Arc<dyn Backend>, input: impl BufRead + Send + 'static, mut 
     let settings = Settings::default();
     let sink = Sink::new(settings.replay, settings.replay_seconds);
     if let Some(ram) = total_ram_bytes() {
-        let limit = (ram as f64 * REPLAY_RAM_SHARE) as u64;
+        let limit = replay_limit(ram);
         log!("replay buffer limited to {} MB", limit / 1_000_000);
         sink.set_memory_limit(Some(limit.min(usize::MAX as u64) as usize));
     }
@@ -595,7 +599,12 @@ pub fn run(backend: Arc<dyn Backend>, input: impl BufRead + Send + 'static, mut 
                 engine.configure(settings);
             }
             Ok(Command::Probe) => {
-                let probe = engine.backend.probe();
+                let mut probe = engine.backend.probe();
+                // So Settings can say when the replay length asked for won't fit.
+                if let Some(ram) = total_ram_bytes() {
+                    probe.ram_bytes = ram;
+                    probe.replay_limit_bytes = replay_limit(ram);
+                }
                 let _ = events.send(Event::Probe { probe: Box::new(probe) });
             }
             Ok(Command::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,

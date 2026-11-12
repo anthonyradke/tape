@@ -600,3 +600,14 @@ fn tapes_own_sounds_are_left_out_of_default_game_audio_where_windows_allows() {
     assert!(!excludes(&s));
     assert_eq!(s["system"]["problem"], Value::Null);
 }
+
+#[test]
+fn the_probe_reports_ram_and_the_replay_limit() {
+    let mut e = Engine::start("probe-ram", &[]);
+    e.send(json!({"cmd": "probe"}));
+    let probe = e.wait(5, "probe", |ev| ev["evt"] == "probe")["probe"].clone();
+    let ram = probe["ramBytes"].as_u64().unwrap();
+    let limit = probe["replayLimitBytes"].as_u64().unwrap();
+    assert!(ram > 0, "{probe}");
+    assert!(limit > ram / 3 && limit < ram / 2, "40% of {ram}: {limit}");
+}

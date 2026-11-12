@@ -141,6 +141,7 @@ impl Backend for Fake {
             monitors: vec![Monitor { id: "fake".into(), name: "Fake monitor".into(), width: 640, height: 360, hz: 60, primary: true }],
             outputs: vec![AudioDevice { id: "out".into(), name: "Fake speakers".into() }],
             inputs: vec![AudioDevice { id: "in".into(), name: "Fake microphone".into() }],
+            ..Probe::default()
         }
     }
 

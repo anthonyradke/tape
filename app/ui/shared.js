@@ -103,7 +103,29 @@ const currentMonitor = () => {
   return p.monitors.find((m) => m.id === s.monitor) || p.monitors.find((m) => m.primary) || p.monitors[0];
 };
 
-// Sizes go by the monitor's short edge, so these mean the same on one turned on its side.
+// The largest frame the GPU's encoder takes for the chosen format, from the probe, if it said.
+const codecLimit = () => view.probe.limits?.find((l) => l.codec === view.settings.codec);
+
+// The frame a resolution setting asks for on the current monitor, before any encoder limit: the
+// same sum as `output_size` in settings.rs.
+function wantedSize(resolution) {
+  const m = currentMonitor();
+  if (!m) return null;
+  if (!resolution) return [m.width, m.height];
+  const short = Math.max(1, Math.min(m.width, m.height));
+  return [Math.floor((m.width * resolution) / short), Math.floor((m.height * resolution) / short)];
+}
+
+const tooLarge = (resolution) => {
+  const limit = codecLimit();
+  const size = wantedSize(resolution);
+  return !!(limit && size && (size[0] > limit.maxWidth || size[1] > limit.maxHeight));
+};
+
+const codecName = () => (CODECS.find(([v]) => v === view.settings.codec) || [])[1] || view.settings.codec;
+
+// Sizes go by the monitor's short edge, so these mean the same on one turned on its side. Sizes the
+// chosen format can't encode here are greyed out, except the one already set.
 function heightOptions() {
   const s = view.settings;
   const current = currentMonitor();
@@ -111,13 +133,21 @@ function heightOptions() {
   const native = current ? `Monitor, ${current.width}×${current.height}` : "Monitor";
   const heights = [[0, native], ...HEIGHTS.filter(([h]) => h !== short)];
   if (s.resolution && !heights.some(([h]) => h === s.resolution)) heights.push([s.resolution, `${s.resolution}p`]);
-  return heights;
+  return heights.map(([h, label]) => (tooLarge(h) ? [h, `${label}, too large for ${codecName()}`, h !== s.resolution] : [h, label]));
 }
 
-// Said wherever the resolution can be changed, since more pixels here isn't more picture.
+// Said wherever the resolution can be changed, since more pixels here isn't more picture. Also says
+// when the encoder can't take the size set, which the engine then scales down to fit.
 function upscaleNote() {
   const s = view.settings;
   const current = currentMonitor();
+  const limit = codecLimit();
+  if (limit && tooLarge(s.resolution)) {
+    const [w, h] = wantedSize(s.resolution);
+    const scale = Math.min(limit.maxWidth / w, limit.maxHeight / h);
+    const fit = [Math.floor(w * scale) & ~1, Math.floor(h * scale) & ~1];
+    return `<p class="note warn">${esc(codecName())} on this GPU goes up to ${limit.maxWidth}×${limit.maxHeight}, so this is recorded at ${fit[0]}×${fit[1]}. Pick a smaller size or another format.</p>`;
+  }
   if (!current || s.resolution <= Math.min(current.width, current.height)) return "";
   return `<p class="note">Upscaled from ${current.width}×${current.height}. Files get larger and the picture gains no detail, but sites like YouTube keep higher resolutions at better quality. Raise the bitrate to match.</p>`;
 }

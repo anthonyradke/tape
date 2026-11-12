@@ -162,6 +162,10 @@ pub struct Probe {
     pub monitors: Vec<Monitor>,
     pub outputs: Vec<AudioDevice>,
     pub inputs: Vec<AudioDevice>,
+    /// Physical RAM, 0 if unknown.
+    pub ram_bytes: u64,
+    /// The most the replay buffer may hold, whatever its length and bitrate, 0 if unlimited.
+    pub replay_limit_bytes: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

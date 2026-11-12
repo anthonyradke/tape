@@ -35,6 +35,7 @@ function renderSettings() {
     ${row("Keep the last", select("replaySeconds", LENGTHS, s.replaySeconds))}
     ${row("Short clip", select("shortClipSeconds", shortLengths(), s.shortClipSeconds))}
     <p class="note">Held in memory, never written to disk until you save. Uses up to ${bytes(view.replayRam)} of RAM at this bitrate.</p>
+    ${replayLimitNote()}
   </div></section>`);
 
   html.push(renderPerGame());
@@ -419,6 +420,18 @@ function accelerator(e) {
   // A letter alone would fire while typing anywhere; function keys and the like are fine alone.
   if (!parts.length && !/^(F\d+|Home|End|Insert|Delete|PageUp|PageDown|Pause|ScrollLock|PrintScreen)$/.test(key)) return null;
   return [...parts, key].join("+");
+}
+
+// The engine keeps the replay buffer under a share of the PC's RAM (REPLAY_RAM_SHARE in engine.rs),
+// which a long replay at a high bitrate can pass: then the oldest part is let go sooner.
+function replayLimitNote() {
+  const limit = view.probe.replayLimitBytes;
+  const s = view.settings;
+  if (!limit || view.replayRam <= limit) return "";
+  const perSecond = view.replayRam / (s.replaySeconds + 3);
+  const minutes = Math.max(0.5, Math.floor(((limit / perSecond) / 60) * 2) / 2);
+  const ram = view.probe.ramBytes ? `, ${Math.round((limit / view.probe.ramBytes) * 100)}% of this PC's ${bytes(view.probe.ramBytes)}` : "";
+  return `<p class="note warn">More than the replay buffer may use (${bytes(limit)}${ram}), so it will hold about ${minutes} minute${minutes === 1 ? "" : "s"} at this bitrate. Lower the bitrate or the length to keep it all.</p>`;
 }
 
 // Ends a key capture that was left without a key: the window lost focus or is going away. The

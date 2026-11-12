@@ -35,9 +35,12 @@
     settings, status,
     probe: {
       gpu: "NVIDIA GeForce RTX 4070", driver: "32.0.15.6614", codecs: ["h264", "hevc", "av1"], nvencError: null,
+      limits: [{ codec: "h264", maxWidth: 4096, maxHeight: 4096 }, { codec: "hevc", maxWidth: 8192, maxHeight: 8192 }, { codec: "av1", maxWidth: 8192, maxHeight: 8192 }],
+      ramBytes: 16e9, replayLimitBytes: 6.4e9,
       monitors: [
         { id: "\\\\.\\DISPLAY1", name: "Monitor 1", width: 1920, height: 1080, hz: 240, primary: true },
         { id: "\\\\.\\DISPLAY2", name: "Monitor 2", width: 1920, height: 1080, hz: 60, primary: false },
+        { id: "\\\\.\\DISPLAY3", name: "Monitor 3", width: 3440, height: 1440, hz: 144, primary: false },
       ],
       outputs: [{ id: "out-1", name: "Headphones (Arctis Nova 5)" }, { id: "out-2", name: "Speakers (Realtek Audio)" }],
       inputs: [{ id: "mic-1", name: "Headset Microphone (Arctis Nova 5)" }],

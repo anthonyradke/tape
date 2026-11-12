@@ -28,6 +28,8 @@ pub struct Hotkeys {
     pub overlay: String,
     /// Saves only the last `Settings::short_clip_seconds`.
     pub short_clip: String,
+    /// Saves a clip and copies a link to it, when sharing is set up.
+    pub share_clip: String,
     /// Marks a moment in a recording.
     pub marker: String,
 }
@@ -42,6 +44,8 @@ impl Default for Hotkeys {
             overlay: "Alt+Z".into(),
             // Beside the save key. Neither Windows nor the NVIDIA app uses it.
             short_clip: "Alt+F11".into(),
+            // None: it only works once a share server is set up, so it holds no key until then.
+            share_clip: String::new(),
             // Next to record. ShadowPlay had it for broadcasting, which the NVIDIA app dropped.
             marker: "Alt+F8".into(),
         }

@@ -16,6 +16,7 @@ use crate::state::Shared;
 enum Action {
     SaveClip,
     ShortClip,
+    ShareClip,
     ToggleRecording,
     ToggleReplay,
     Overlay,
@@ -42,6 +43,7 @@ pub fn plugin() -> TauriPlugin<Wry> {
             match action {
                 Some(Action::SaveClip) => commands::do_save_clip(app),
                 Some(Action::ShortClip) => commands::do_save_short_clip(app),
+                Some(Action::ShareClip) => crate::share::save_and_share(app),
                 Some(Action::ToggleRecording) => commands::do_toggle_recording(app),
                 Some(Action::ToggleReplay) => commands::do_toggle_replay(app),
                 Some(Action::Overlay) => overlay::toggle(app),
@@ -55,10 +57,11 @@ pub fn plugin() -> TauriPlugin<Wry> {
         .build()
 }
 
-fn wanted(keys: &Hotkeys) -> [(&String, Action); 6] {
+fn wanted(keys: &Hotkeys) -> [(&String, Action); 7] {
     [
         (&keys.save_clip, Action::SaveClip),
         (&keys.short_clip, Action::ShortClip),
+        (&keys.share_clip, Action::ShareClip),
         (&keys.toggle_recording, Action::ToggleRecording),
         (&keys.toggle_replay, Action::ToggleReplay),
         (&keys.overlay, Action::Overlay),

@@ -7,7 +7,7 @@ use std::future::Future;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::task::Poll;
 use std::time::Duration;
@@ -17,7 +17,8 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::commands;
-use crate::state::Shared;
+use crate::cue::{self, Cue};
+use crate::state::{self, Shared};
 use crate::supervisor;
 
 /// Waits before each retry of a part. Only failures that may pass are retried: no answer, or the
@@ -481,6 +482,78 @@ pub async fn share_clip(app: AppHandle, path: String) -> Result<String, String> 
     result
 }
 
+/// Save requests from the save-and-share key whose clip is still being written, each with whether
+/// sharing was set up when it was pressed.
+static WAITING: Mutex<Vec<(u64, bool)>> = Mutex::new(Vec::new());
+static NEXT_REQUEST: AtomicU64 = AtomicU64::new(1);
+/// The save chime runs about half a second. A cue played sooner would cut it off.
+const AFTER_CHIME: Duration = Duration::from_millis(600);
+
+/// Saves a clip as the save key does, then shares it once the engine says it's written
+/// (`clip_saved`). Not set up for sharing, the clip is still saved and the failure cue follows.
+pub fn save_and_share(app: &AppHandle) {
+    let request = NEXT_REQUEST.fetch_add(1, Ordering::Relaxed);
+    WAITING.lock().unwrap().push((request, set_up(app)));
+    state::send(app, &tape_core::ipc::Command::SaveClip { seconds: None, request });
+}
+
+#[tauri::command]
+pub fn save_and_share_clip(app: AppHandle) {
+    save_and_share(&app);
+}
+
+fn take_waiting(request: u64) -> Option<bool> {
+    let mut waiting = WAITING.lock().unwrap();
+    let at = waiting.iter().position(|(r, _)| *r == request && request != 0)?;
+    Some(waiting.remove(at).1)
+}
+
+/// The save from `save_and_share` failed, which the engine's error already says.
+pub fn save_failed(request: u64) {
+    take_waiting(request);
+}
+
+fn play_after_chime(app: &AppHandle, cue: Cue) {
+    if !app.state::<Shared>().settings.lock().unwrap().sounds {
+        return;
+    }
+    std::thread::spawn(move || {
+        std::thread::sleep(AFTER_CHIME);
+        cue::play(cue);
+    });
+}
+
+/// A clip was saved. If it came from `save_and_share`, shares it as Copy link would, so the
+/// gallery shows its progress, and plays the link cue once the link is on the clipboard. A share
+/// already running is refused like a second Copy link, with the failure cue.
+pub fn clip_saved(app: &AppHandle, request: u64, path: String) {
+    let Some(ready) = take_waiting(request) else { return };
+    if !ready {
+        play_after_chime(app, Cue::Failed);
+        let _ = app.emit("error", "Clip saved. Sharing isn't set up yet, so there's no link: add the share server and upload key in Settings.");
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let result = share_clip(app.clone(), path).await;
+        let sounds = app.state::<Shared>().settings.lock().unwrap().sounds;
+        match result {
+            Ok(url) => {
+                if sounds {
+                    cue::play(Cue::LinkCopied);
+                }
+                let _ = app.emit("link-copied", url);
+            }
+            Err(e) => {
+                if sounds && e != CANCELLED {
+                    cue::play(Cue::Failed);
+                }
+                let _ = app.emit("error", e);
+            }
+        }
+    });
+}
+
 #[tauri::command]
 pub fn cancel_share(app: AppHandle) {
     let shares = app.state::<Shares>();
@@ -636,6 +709,16 @@ mod tests {
         assert!(began.elapsed() < Duration::from_secs(5));
         // Already cancelled: nothing more is sent.
         assert!(run(cancel.until(async { 1 })).is_none());
+    }
+
+    #[test]
+    fn only_the_save_and_share_request_is_shared_and_only_once() {
+        WAITING.lock().unwrap().push((900, true));
+        WAITING.lock().unwrap().push((901, false));
+        assert_eq!(take_waiting(0), None, "an ordinary save");
+        assert_eq!(take_waiting(901), Some(false));
+        assert_eq!(take_waiting(900), Some(true));
+        assert_eq!(take_waiting(900), None);
     }
 
     #[test]

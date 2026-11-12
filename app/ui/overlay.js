@@ -27,6 +27,8 @@ function render() {
   $("k-clip").textContent = s.hotkeys.saveClip;
   $("k-rec").textContent = s.hotkeys.toggleRecording;
   $("k-short").textContent = s.hotkeys.shortClip;
+  $("k-share").textContent = s.hotkeys.shareClip;
+  $("b-share").hidden = !(s.shareServer && s.shareKey);
   renderReplaySwitch();
   renderStatus(status);
 }
@@ -62,6 +64,7 @@ function renderStatus(s) {
   // What the short key saves right now: its length, or less right after another clip.
   const short = Math.min(view.settings.shortClipSeconds, s.replayTarget);
   $("b-short").disabled = !s.replayOn;
+  $("b-share").disabled = !s.replayOn;
   $("b-short-text").textContent = s.replayOn ? `Save last ${span(Math.min(s.clipSeconds, short))}` : "Save short clip";
   $("b-rec").className = s.recording ? "btn big press stop" : "btn big press";
   $("b-rec-text").textContent = s.recording ? "Stop recording" : "Start recording";
@@ -96,6 +99,7 @@ document.addEventListener("click", (e) => {
     case "hide": return hide();
     case "clip": return invoke("save_clip");
     case "short-clip": return invoke("save_short_clip");
+    case "share-clip": return invoke("save_and_share_clip");
     case "record": return invoke("toggle_recording");
     case "settings": return invoke("open_main");
     case "links": return invoke("open_main");

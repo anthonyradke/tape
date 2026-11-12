@@ -329,7 +329,7 @@ fn handle(app: &AppHandle, event: Event, alarm: &mut Alarm) {
             *shared.probe.lock().unwrap() = *probe;
             let _ = app.emit("changed", ());
         }
-        Event::Saved { kind, path, .. } => {
+        Event::Saved { kind, path, request, .. } => {
             if sounds {
                 cue::play(if kind == SavedKind::Clip { Cue::ClipSaved } else { Cue::RecordingStopped });
             }
@@ -341,8 +341,11 @@ fn handle(app: &AppHandle, event: Event, alarm: &mut Alarm) {
                     status.recording_path = None;
                 }
             }
-            let _ = app.emit("saved", path);
+            let _ = app.emit("saved", &path);
             let _ = app.emit("changed", ());
+            if kind == SavedKind::Clip {
+                crate::share::clip_saved(app, request, path);
+            }
         }
         Event::Marked { seconds } => {
             if sounds {
@@ -350,7 +353,8 @@ fn handle(app: &AppHandle, event: Event, alarm: &mut Alarm) {
             }
             let _ = app.emit("marked", seconds);
         }
-        Event::Error { message, clip, stopped } => {
+        Event::Error { message, clip, stopped, request } => {
+            crate::share::save_failed(request);
             if clip && sounds {
                 cue::play(Cue::Failed);
             }

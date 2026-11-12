@@ -129,6 +129,7 @@ fn main() {
             commands::pause_hotkeys,
             commands::resume_hotkeys,
             share::share_clip,
+            share::save_and_share_clip,
             share::cancel_share,
             share::share_jobs,
             share::share_usage,

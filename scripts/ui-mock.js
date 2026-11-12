@@ -8,7 +8,7 @@
     showCursor: true, replay: scene !== "off", replaySeconds: 120, shortClipSeconds: 30, systemAudio: "default", excludeTapeAudio: true, microphone: scene === "replay" ? "" : "mic-1",
     systemVolume: 100, micVolume: 100, separateTracks: false,
     shareServer: q.get("cloud") === "off" ? "" : "https://tape-clips.example.workers.dev", shareKey: q.get("cloud") === "off" ? "" : "not-a-real-key",
-    hotkeys: { saveClip: "Alt+F10", toggleRecording: "Alt+F9", toggleReplay: "Alt+Shift+F10", overlay: "Alt+Z", marker: "Alt+F8", shortClip: "Alt+F11" }, sounds: true,
+    hotkeys: { saveClip: "Alt+F10", toggleRecording: "Alt+F9", toggleReplay: "Alt+Shift+F10", overlay: "Alt+Z", marker: "Alt+F8", shortClip: "Alt+F11", shareClip: "" }, sounds: true,
   };
   const recording = scene === "recording";
   const trouble = scene === "trouble";
@@ -140,6 +140,10 @@
           emit("share-usage", structuredClone(usage));
           emit("share", { path: args.path, stage: "done", progress: 1, url: l.url }); // as the app does, to every window
           return l.url;
+        }
+        if (cmd === "save_and_share_clip") {
+          emit("saved", "C:\\Users\\me\\Videos\\Tape\\Counter-Strike 2\\Counter-Strike 2 2026.11.01 - 21.31.00.11.DVR.mp4");
+          return setTimeout(() => emit("link-copied", "https://tape-clips.example.workers.dev/abc123"), 600);
         }
         if (cmd === "save_clip" || cmd === "save_short_clip") return emit("saved", "C:\\Users\\me\\Videos\\Tape\\Counter-Strike 2\\Counter-Strike 2 2026.11.01 - 21.30.00.11.DVR.mp4");
         if (cmd === "self_test") return setTimeout(() => emit("selftest", "tape 0.1.0 self-test\nWindows 10.0.26100\n\nCapture\n  Desktop Duplication: OK"), 300);

@@ -285,13 +285,13 @@ pub fn save_settings(app: AppHandle, settings: Settings) -> View {
 }
 
 pub fn do_save_clip(app: &AppHandle) {
-    state::send(app, &Command::SaveClip { seconds: None });
+    state::send(app, &Command::SaveClip { seconds: None, request: 0 });
 }
 
 /// Only the last `short_clip_seconds`, through the same save as the full one.
 pub fn do_save_short_clip(app: &AppHandle) {
     let seconds = app.state::<Shared>().settings.lock().unwrap().short_clip_seconds;
-    state::send(app, &Command::SaveClip { seconds: Some(seconds) });
+    state::send(app, &Command::SaveClip { seconds: Some(seconds), request: 0 });
 }
 
 pub fn do_toggle_recording(app: &AppHandle) {

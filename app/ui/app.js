@@ -54,6 +54,7 @@ function renderSettings() {
 
   html.push(`<section class="sec"><h3>Keys</h3><div class="card">
     ${KEYS.map(([k, label]) => row(label, `<button class="keycap ${taken.includes(s.hotkeys[k]) ? "taken" : ""}" data-hotkey="${k}">${esc(s.hotkeys[k] || "None")}</button>`)).join("")}
+    ${s.hotkeys.shareClip && !(s.shareServer && s.shareKey) ? `<p class="note warn">Save and copy link needs a share server, set under Sharing. Until then it only saves the clip.</p>` : ""}
     <p class="note">Add marker marks a moment while recording. Players that show chapters, like VLC and mpv, list the markers.</p>
     ${taken.length ? `<p class="note warn">${esc(taken.join(", "))} ${taken.length > 1 ? "are" : "is"} in use by another app.</p>` : ""}
   </div></section>`);

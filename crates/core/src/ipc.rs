@@ -10,9 +10,13 @@ use crate::settings::Settings;
 pub enum Command {
     Configure { settings: Box<Settings> },
     /// `seconds` asks for at most that much, for the short clip key; None is the replay length.
+    /// `request` is passed back in the `Saved` or `Error` it ends in, for the host to tell its own
+    /// saves apart (the one it shares once saved). 0 when that doesn't matter.
     SaveClip {
         #[serde(default)]
         seconds: Option<u32>,
+        #[serde(default)]
+        request: u64,
     },
     StartRecording,
     StopRecording,
@@ -172,7 +176,14 @@ pub enum SavedKind {
 pub enum Event {
     Status { status: Box<Status> },
     Probe { probe: Box<Probe> },
-    Saved { kind: SavedKind, path: String, bytes: u64 },
+    Saved {
+        kind: SavedKind,
+        path: String,
+        bytes: u64,
+        /// The `SaveClip` request this answers, 0 for none.
+        #[serde(default)]
+        request: u64,
+    },
     /// The answer to `AddMarker`: how far into the recording's file it went, or None when no
     /// recording is being written.
     Marked { seconds: Option<f64> },
@@ -184,6 +195,9 @@ pub enum Event {
         clip: bool,
         #[serde(default)]
         stopped: bool,
+        /// The `SaveClip` request this answers, 0 for none.
+        #[serde(default)]
+        request: u64,
     },
 }
 
@@ -202,14 +216,16 @@ mod tests {
     #[test]
     fn a_save_without_a_length_is_a_full_one() {
         let command: Command = serde_json::from_str(r#"{"cmd":"saveClip"}"#).unwrap();
-        assert!(matches!(command, Command::SaveClip { seconds: None }));
-        let command: Command = serde_json::from_str(r#"{"cmd":"saveClip","seconds":30}"#).unwrap();
-        assert!(matches!(command, Command::SaveClip { seconds: Some(30) }));
+        assert!(matches!(command, Command::SaveClip { seconds: None, request: 0 }));
+        let command: Command = serde_json::from_str(r#"{"cmd":"saveClip","seconds":30,"request":4}"#).unwrap();
+        assert!(matches!(command, Command::SaveClip { seconds: Some(30), request: 4 }));
+        let event: Event = serde_json::from_str(r#"{"evt":"saved","kind":"clip","path":"a","bytes":1}"#).unwrap();
+        assert!(matches!(event, Event::Saved { request: 0, .. }));
     }
 
     #[test]
     fn new_fields_are_sent() {
-        let line = serde_json::to_string(&Event::Error { message: "x".into(), clip: false, stopped: true }).unwrap();
+        let line = serde_json::to_string(&Event::Error { message: "x".into(), clip: false, stopped: true, request: 0 }).unwrap();
         assert!(line.contains(r#""stopped":true"#), "{line}");
         let video = VideoStatus { transient: true, ..Default::default() };
         assert!(serde_json::to_string(&video).unwrap().contains(r#""transient":true"#));

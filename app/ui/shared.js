@@ -15,7 +15,7 @@ const span = (seconds) => (seconds < 60 ? `${Math.floor(seconds)} s` : clock(sec
 const CODECS = [["h264", "H.264", "plays everywhere"], ["hevc", "HEVC", "smaller files, less widely playable"], ["av1", "AV1", "smallest files, newest GPUs only"]];
 const PRESETS = [["fast", "Fast"], ["balanced", "Balanced"], ["quality", "Quality"]];
 const METHODS = [["auto", "Automatic"], ["duplication", "Desktop Duplication"], ["graphics", "Windows Graphics Capture"]];
-const KEYS = [["saveClip", "Save clip"], ["shortClip", "Save short clip"], ["toggleRecording", "Record"], ["marker", "Add marker"], ["toggleReplay", "Instant replay"], ["overlay", "Overlay"]];
+const KEYS = [["saveClip", "Save clip"], ["shortClip", "Save short clip"], ["shareClip", "Save and copy link"], ["toggleRecording", "Record"], ["marker", "Add marker"], ["toggleReplay", "Instant replay"], ["overlay", "Overlay"]];
 
 let view = null;
 let toastTimer = 0;
@@ -330,6 +330,8 @@ const Cloud = (() => {
     changed();
   });
   listen("share-usage", (e) => set(e.payload));
+  // A link from the save and copy link key or button, which no page asked for itself.
+  listen("link-copied", (e) => toast(`Link copied: ${e.payload}`));
   invoke("share_jobs").then((list) => {
     list.filter(active).forEach((j) => jobs.set(j.path, j));
     changed();

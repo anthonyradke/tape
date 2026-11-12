@@ -199,9 +199,10 @@ fn a_short_clip_keeps_only_its_length_and_the_next_clip_follows_it() {
     let mut e = Engine::start("short", &[]);
     e.configure(json!({"replaySeconds": 10, "microphone": ""}));
     e.wait_status(20, "8 s buffered", |s| s["replaySeconds"].as_f64().unwrap() >= 8.0);
-    e.send(json!({"cmd": "saveClip", "seconds": 3}));
+    e.send(json!({"cmd": "saveClip", "seconds": 3, "request": 7}));
     let event = e.wait(10, "short clip", |ev| ev["evt"] == "saved" || ev["evt"] == "error");
     assert_eq!(event["evt"], "saved", "{event}");
+    assert_eq!(event["request"], 7, "the host matches its own saves by this");
     let short = seconds(&probe(&saved(&event)));
     // Clips start on a keyframe, one a second here, so up to a second more than asked.
     assert!((3.0..=4.2).contains(&short), "short clip is {short} s");
@@ -213,6 +214,9 @@ fn a_short_clip_keeps_only_its_length_and_the_next_clip_follows_it() {
     assert_eq!(event["evt"], "saved", "{event}");
     let next = seconds(&probe(&saved(&event)));
     assert!(next < 4.0, "the full clip must start where the short one ended, not repeat it: {next} s");
+    e.send(json!({"cmd": "saveClip", "request": 8}));
+    let event = e.wait(10, "refused clip", |ev| ev["evt"] == "saved" || ev["evt"] == "error");
+    assert_eq!((&event["evt"], &event["request"], &event["clip"]), (&json!("error"), &json!(8), &json!(true)), "{event}");
 }
 
 #[test]

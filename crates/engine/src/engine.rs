@@ -297,9 +297,11 @@ impl Engine {
     }
 
     /// `seconds`: at most this much, never more than the replay length. None for all of it.
-    fn save_clip(&mut self, seconds: Option<u32>) {
+    /// `request` comes back in the event it ends with.
+    fn save_clip(&mut self, seconds: Option<u32>, request: u64) {
+        let failed = move |message: String| Event::Error { message, clip: true, stopped: false, request };
         if !self.settings.replay {
-            let _ = self.events.send(Event::Error { message: "Instant replay is off".into(), clip: true, stopped: false });
+            let _ = self.events.send(failed("Instant replay is off".into()));
             return;
         }
         let full = self.settings.replay_seconds;
@@ -314,17 +316,17 @@ impl Engine {
                 thread::sleep(Duration::from_millis(10));
             }
             let event = match sink.clip_until(seconds, end) {
-                None if sink.replay_seconds() > 0.0 => Event::Error { message: "Nothing new since the last clip".into(), clip: true, stopped: false },
-                None => Event::Error { message: "Nothing has been buffered yet".into(), clip: true, stopped: false },
+                None if sink.replay_seconds() > 0.0 => failed("Nothing new since the last clip".into()),
+                None => failed("Nothing has been buffered yet".into()),
                 Some(clip) => match write_file(&path, &clip) {
                     Ok(bytes) => {
                         log!("saved clip {} ({bytes} bytes)", path.display());
-                        Event::Saved { kind: SavedKind::Clip, path: path.display().to_string(), bytes }
+                        Event::Saved { kind: SavedKind::Clip, path: path.display().to_string(), bytes, request }
                     }
                     Err(e) => {
                         log!("clip failed: {e}");
                         sink.clip_failed(&clip);
-                        Event::Error { message: format!("Couldn't save the clip: {e}"), clip: true, stopped: false }
+                        failed(format!("Couldn't save the clip: {e}"))
                     }
                 },
             };
@@ -355,11 +357,11 @@ impl Engine {
         log!("recording finished {} ({} bytes)", finished.path.display(), finished.bytes);
         if let Some(message) = &finished.error {
             log!("recording error: {message}");
-            let _ = self.events.send(Event::Error { message: message.clone(), clip: false, stopped });
+            let _ = self.events.send(Event::Error { message: message.clone(), clip: false, stopped, request: 0 });
         }
         if finished.bytes > 0 {
             let path = finished.path.display().to_string();
-            let _ = self.events.send(Event::Saved { kind: SavedKind::Recording, path, bytes: finished.bytes });
+            let _ = self.events.send(Event::Saved { kind: SavedKind::Recording, path, bytes: finished.bytes, request: 0 });
         }
     }
 
@@ -373,7 +375,7 @@ impl Engine {
         }
         if let Some(message) = self.sink.take_failure() {
             log!("recording problem: {message}");
-            let _ = self.events.send(Event::Error { message, clip: false, stopped: true });
+            let _ = self.events.send(Event::Error { message, clip: false, stopped: true, request: 0 });
             self.stop_recording();
         }
     }
@@ -543,7 +545,7 @@ pub fn run(backend: Arc<dyn Backend>, input: impl BufRead + Send + 'static, mut 
         let wait = next_status.saturating_duration_since(Instant::now());
         match commands_rx.recv_timeout(wait) {
             Ok(Command::Configure { settings }) => engine.configure(*settings),
-            Ok(Command::SaveClip { seconds }) => engine.save_clip(seconds),
+            Ok(Command::SaveClip { seconds, request }) => engine.save_clip(seconds, request),
             Ok(Command::StartRecording) => engine.start_recording(),
             Ok(Command::StopRecording) => engine.stop_recording(),
             Ok(Command::AddMarker) => {

@@ -9,6 +9,8 @@ pub enum Cue {
     Failed,
     /// A marker went into the recording.
     Marker,
+    /// A link to a clip is on the clipboard.
+    LinkCopied,
     /// A key that has nothing to act on right now, like a marker with no recording going.
     Nothing,
 }
@@ -16,7 +18,7 @@ pub enum Cue {
 const RATE: u32 = 44_100;
 /// How many kinds of `Cue` there are.
 #[cfg_attr(not(windows), allow(dead_code))]
-const CUES: usize = 6;
+const CUES: usize = 7;
 const VOLUME: f32 = 0.16;
 
 /// The clip cue plays over every save, usually in headphones, so it's two low plucked notes that
@@ -75,6 +77,8 @@ fn wav(cue: Cue) -> Vec<u8> {
         Cue::Failed => tones(&[(196.0, 140), (0.0, 60), (196.0, 140)]),
         // One short high pluck, quieter than a save, so it doesn't pull attention mid-game.
         Cue::Marker => pluck(&[(987.77, 0.0)], 0.18, 0.07), // B5
+        // Three notes going up, brighter than a save, since it comes a while after one.
+        Cue::LinkCopied => pluck(&[(783.99, 0.0), (1046.5, 0.08), (1318.51, 0.16)], 0.35, 0.08), // G5, C6, E6
         // A soft low pluck, nothing like the alarm of a failure.
         Cue::Nothing => pluck(&[(220.0, 0.0)], 0.16, 0.06), // A3
     };
@@ -123,7 +127,7 @@ mod tests {
 
     #[test]
     fn every_cue_is_a_short_sound() {
-        let all = [Cue::ClipSaved, Cue::RecordingStarted, Cue::RecordingStopped, Cue::Failed, Cue::Marker, Cue::Nothing];
+        let all = [Cue::ClipSaved, Cue::RecordingStarted, Cue::RecordingStopped, Cue::Failed, Cue::Marker, Cue::LinkCopied, Cue::Nothing];
         assert_eq!(all.len(), CUES);
         for (i, cue) in all.into_iter().enumerate() {
             assert_eq!(cue as usize, i, "the sounds are kept by position");

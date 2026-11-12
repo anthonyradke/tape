@@ -191,6 +191,9 @@ pub fn run(settings: &Settings, ctx: &VideoContext) -> Result<(), String> {
         }
         let now = ctx.clock.now_us();
         ctx.stats.encode_us.store((now - began) as u32, Ordering::Relaxed);
+        if (now - began) as f64 > period {
+            ctx.stats.late.fetch_add(1, Ordering::Relaxed);
+        }
 
         tick += 1;
         let behind = ((now - start_us) as f64 / period) as i64 - tick;

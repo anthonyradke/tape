@@ -52,6 +52,8 @@ pub struct Sink {
     /// The video thread reads this and forces a keyframe, so a recording starts immediately.
     want_keyframe: AtomicBool,
     frames: AtomicU64,
+    /// Times a recording's writer fell behind the disk, across every file.
+    slow_disk: Arc<AtomicU64>,
 }
 
 impl Sink {
@@ -72,11 +74,17 @@ impl Sink {
             }),
             want_keyframe: AtomicBool::new(false),
             frames: AtomicU64::new(0),
+            slow_disk: Arc::default(),
         })
     }
 
     pub fn take_keyframe_request(&self) -> bool {
         self.want_keyframe.swap(false, Ordering::Relaxed)
+    }
+
+    /// Times a recording's writer fell behind the disk so far.
+    pub fn slow_disk_events(&self) -> u64 {
+        self.slow_disk.load(Ordering::Relaxed)
     }
 
     /// Video frames accepted so far.
@@ -144,7 +152,7 @@ impl Sink {
 
         if key {
             if let Some(path) = s.pending.take() {
-                match Recorder::start(&path, tracks) {
+                match Recorder::start_counting(&path, tracks, self.slow_disk.clone()) {
                     Ok(recorder) => s.active = Some(Active { recorder, started_us: us }),
                     Err(e) => s.failure = Some(e),
                 }

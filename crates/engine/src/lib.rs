@@ -8,6 +8,7 @@ mod engine;
 pub mod fake;
 pub mod log;
 mod mix;
+mod quality;
 pub mod rotation;
 #[cfg(windows)]
 mod win;

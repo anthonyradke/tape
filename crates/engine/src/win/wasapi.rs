@@ -122,6 +122,8 @@ pub struct Input {
     /// The mix format as WASAPI gave it, for the log.
     format: String,
     silence: SilenceMeter,
+    /// Packets read so far. The first one is often flagged as a discontinuity, which means nothing.
+    packets: u64,
 }
 
 impl Input {
@@ -188,6 +190,7 @@ impl Input {
                 stereo: Vec::new(),
                 format: format_text,
                 silence: SilenceMeter::new(Instant::now()),
+                packets: 0,
             })
         }
     }
@@ -230,6 +233,8 @@ impl AudioInput for Input {
             let (mut data, mut frames, mut flags, mut qpc) = (std::ptr::null_mut(), 0u32, 0u32, 0u64);
             unsafe { self.capture.GetBuffer(&mut data, &mut frames, &mut flags, None, Some(&mut qpc)) }.map_err(|e| format!("Device lost: {e}"))?;
             let silent = flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0;
+            let discontinuity = self.packets > 0 && flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 != 0;
+            self.packets += 1;
             if let Some(line) = self.silence.packet(silent, Instant::now()) {
                 log!("audio {:?} ({}): {line}", self.source, self.name);
             }
@@ -247,7 +252,7 @@ impl AudioInput for Input {
             to_stereo(&self.pcm, self.channels, &mut self.stereo);
             let mut stereo = Vec::with_capacity(self.stereo.len() + 16);
             self.resampler.process(&self.stereo, &mut stereo);
-            out.push(AudioBlock { at: from_micros(at_us, AUDIO_RATE), stereo });
+            out.push(AudioBlock { at: from_micros(at_us, AUDIO_RATE), stereo, discontinuity });
         }
     }
 

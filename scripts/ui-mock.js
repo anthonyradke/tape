@@ -18,7 +18,10 @@
     mic: settings.microphone ? { name: "Headset Microphone", running: true, peak: 0.18, problem: null } : null,
     replayOn: settings.replay, replaySeconds: 87.4, clipSeconds: 87.4, replayTarget: 120, replayBytes: 480e6,
     recording, recordingSeconds: recording ? 754 : 0, recordingBytes: recording ? 3.9e9 : 0, recordingPath: null, restarts: 0, game: "Counter-Strike 2",
+    quality: { total: { droppedFrames: 0, lateFrames: 0, systemGlitches: 0, micGlitches: 0, slowDisk: 0 }, seconds: 900, recent: { droppedFrames: 0, lateFrames: 0, systemGlitches: 0, micGlitches: 0, slowDisk: 0 }, recentSeconds: 300 },
   };
+  // ?quality=1 has something to report from the last few minutes.
+  if (q.get("quality")) Object.assign(status.quality.recent, { droppedFrames: 12, systemGlitches: 1 });
   const now = Date.now();
   // Clips use sample.mp4 from next to this file when there is one. See ui-preview.sh.
   const pad = (n) => String(n).padStart(2, "0");

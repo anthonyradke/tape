@@ -8,7 +8,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use tape_core::game::Tracker;
-use tape_core::ipc::{AudioSource, Command, Event, SavedKind, Status, VideoStatus};
+use tape_core::ipc::{AudioSource, Command, Event, QualityCounts, SavedKind, Status, VideoStatus};
 use tape_core::mp4::write_clip;
 use tape_core::naming::{self, ClipKind};
 use tape_core::record::Finished;
@@ -18,6 +18,7 @@ use tape_core::sink::Sink;
 use crate::backend::{AudioContext, AudioShared, Backend, Clock, VideoContext, VideoStats};
 use crate::log;
 use crate::mix;
+use crate::quality::Meter;
 
 const STATUS_EVERY: Duration = Duration::from_millis(500);
 /// How long the video thread may go without a sign of life. Past this it is stuck inside a
@@ -126,6 +127,7 @@ struct Engine {
     last_sample: Instant,
     rate_fps: f32,
     rate_kbps: u32,
+    quality: Meter,
 }
 
 impl Engine {
@@ -152,8 +154,22 @@ impl Engine {
         naming::output_path(&self.folder(), &game, kind, chrono::Local::now())
     }
 
+    /// Every counter the quality report is made of, as totals since the engine started.
+    fn quality_totals(&self) -> QualityCounts {
+        QualityCounts {
+            dropped_frames: self.stats.dropped.load(Ordering::Relaxed),
+            late_frames: self.stats.late.load(Ordering::Relaxed),
+            system_glitches: self.audio_shared.system_glitches.load(Ordering::Relaxed),
+            mic_glitches: self.audio_shared.mic_glitches.load(Ordering::Relaxed),
+            slow_disk: self.sink.slow_disk_events(),
+        }
+    }
+
     fn start_pipeline(&mut self) {
         if self.video.is_none() {
+            // Counted from here: what went wrong before replay or recording was on isn't in any clip.
+            let totals = self.quality_totals();
+            self.quality.reset(Instant::now(), totals);
             self.sink.set_audio(mix::tracks(&self.settings));
             self.video = Some(self.spawn_video());
         }
@@ -371,6 +387,13 @@ impl Engine {
             self.last_bytes = bytes;
             self.last_sample = Instant::now();
         }
+        let totals = self.quality_totals();
+        let quality = self.quality.report(Instant::now(), totals);
+        if self.video.is_some() {
+            if let Some(line) = self.quality.log_line(Instant::now(), totals, self.rate_fps) {
+                log!("quality: {line}");
+            }
+        }
         let s = &self.stats;
         let rec = self.sink.recording_stats();
         let problem = s.problem.lock().unwrap().clone();
@@ -408,6 +431,7 @@ impl Engine {
             recording_path: rec.path.map(|p| p.display().to_string()),
             restarts: self.restarts.load(Ordering::Relaxed),
             game: self.games.game(RECENT_GAME, Instant::now()),
+            quality,
         }
     }
 }
@@ -497,6 +521,7 @@ pub fn run(backend: Arc<dyn Backend>, input: impl BufRead + Send + 'static, mut 
             mic_delay_ms: AtomicU32::new(settings.mic_delay_ms),
             system: Mutex::new(None),
             mic: Mutex::new(None),
+            ..Default::default()
         }),
         restarts: Arc::default(),
         configured: false,
@@ -507,6 +532,7 @@ pub fn run(backend: Arc<dyn Backend>, input: impl BufRead + Send + 'static, mut 
         last_sample: Instant::now(),
         rate_fps: 0.0,
         rate_kbps: 0,
+        quality: Meter::new(Instant::now(), QualityCounts::default()),
     };
 
     let mut next_status = Instant::now();

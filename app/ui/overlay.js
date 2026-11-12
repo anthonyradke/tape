@@ -39,6 +39,7 @@ function renderStatus(s) {
   state.title = said;
   state.innerHTML = `<i class="dot"></i><span>${esc(said)}</span>`;
   $("ov-game").innerHTML = `Saving to <b>${esc(s.game || "Desktop")}</b>`;
+  $("quality").textContent = qualityText(s);
 
   const replay = $("p-replay");
   if (!s.replayOn) {

@@ -213,6 +213,9 @@ body[data-tab="settings"] .page:not(#page-settings) { display: none; }
 .meter { height: 3px; margin: 9px 0 6px; border-radius: 2px; background: var(--input); overflow: hidden; }
 .meter i { display: block; height: 100%; width: 0; background: var(--live); border-radius: 2px; transition: width 250ms linear; }
 .actions { display: flex; gap: 8px; margin-top: 12px; }
+.quality { margin: 8px 2px 0; color: var(--warn); font-size: 12px; line-height: 1.4; }
+.quality:empty { display: none; }
+.ov-top .quality { margin: -4px 0 10px; }
 
 .alert { margin-top: 10px; padding: 9px 12px; border-radius: var(--r); background: rgba(251, 191, 36, .07); box-shadow: inset 0 0 0 1px rgba(251, 191, 36, .2); color: #fcd68a; font-size: 12.5px; line-height: 1.5; }
 .alert b { font-weight: 600; color: #fde5b0; }

@@ -29,6 +29,24 @@ function clock(seconds) {
   return h ? `${h}:${pad(m)}:${pad(s % 60)}` : `${m}:${pad(s % 60)}`;
 }
 
+// What went wrong in the last few minutes, or nothing when nothing did: a dropped frame an hour ago
+// isn't worth a line. Never a popup, just this under the status.
+function qualityText(s) {
+  const q = s.quality;
+  if (!q || !(s.replayOn || s.recording)) return "";
+  const r = q.recent;
+  const count = (n, one, many) => (n ? `${n} ${n === 1 ? one : many}` : "");
+  const parts = [
+    count(r.droppedFrames, "dropped frame", "dropped frames"),
+    count(r.lateFrames, "slow frame", "slow frames"),
+    count(r.systemGlitches, "game audio glitch", "game audio glitches"),
+    count(r.micGlitches, "mic glitch", "mic glitches"),
+    count(r.slowDisk, "time the disk fell behind", "times the disk fell behind"),
+  ].filter(Boolean);
+  if (!parts.length) return "";
+  return `${parts.join(", ")} in the last ${Math.max(1, Math.round(q.recentSeconds / 60))} min`;
+}
+
 function bytes(n) {
   if (n >= 1e9) return `${(n / 1e9).toFixed(1)} GB`;
   if (n >= 1e6) return `${Math.round(n / 1e6)} MB`;

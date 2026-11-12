@@ -233,6 +233,7 @@ function renderStatus(s) {
   rate.className = running ? "val" : "val dim";
   rate.innerHTML = running ? `${(s.video.bitrateKbps / 1000).toFixed(1)} <small>Mbps</small>` : "—";
   $("p-rate-sub").textContent = running ? s.video.method : "";
+  $("quality").textContent = qualityText(s);
 
   $("b-clip").disabled = !s.replayOn;
   const button = $("b-rec");

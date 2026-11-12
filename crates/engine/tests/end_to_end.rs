@@ -444,3 +444,27 @@ fn missing_aac_encoder_is_reported_and_video_still_saves() {
     let event = e.wait(10, "clip", |ev| ev["evt"] == "saved");
     decode_clean(&saved(&event));
 }
+
+#[test]
+fn quality_counters_report_dropped_frames_and_audio_glitches() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let count = |s: &Value, window: &str, key: &str| s["quality"][window][key].as_u64().unwrap();
+    let mut clean = Engine::start("quality-clean", &[]);
+    clean.configure(json!({"replaySeconds": 5}));
+    let s = clean.wait_status(10, "running a while", |s| s["quality"]["seconds"].as_f64().unwrap() >= 2.0);
+    assert_eq!(s["quality"]["recent"], json!({"droppedFrames": 0, "lateFrames": 0, "systemGlitches": 0, "micGlitches": 0, "slowDisk": 0}));
+
+    let mut e = Engine::start("quality", &[("TAPE_FAKE_DROP_EVERY", "30"), ("TAPE_FAKE_GLITCH_EVERY", "20")]);
+    e.configure(json!({"replaySeconds": 5}));
+    let s = e.wait_status(10, "drops and glitches counted", |s| {
+        s["quality"].is_object() && count(s, "recent", "droppedFrames") >= 3 && count(s, "recent", "systemGlitches") >= 1
+    });
+    assert_eq!(s["quality"]["total"], s["quality"]["recent"], "everything happened within the recent window");
+    assert_eq!(count(&s, "total", "micGlitches"), 0, "the mic is off");
+    assert_eq!(count(&s, "total", "slowDisk"), 0);
+    // A frame in 30 skipped at 60 fps leaves about 58 delivered.
+    let fps = s["video"]["fps"].as_f64().unwrap();
+    assert!((50.0..60.0).contains(&fps), "{fps}");
+}

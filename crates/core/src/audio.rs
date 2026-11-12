@@ -152,6 +152,8 @@ pub struct Timeline {
     error: f64,
     steering: bool,
     jumps: u64,
+    /// Overlaps cut so far, which `jumps` includes.
+    cuts: u64,
     scratch: Vec<f32>,
 }
 
@@ -164,6 +166,7 @@ impl Default for Timeline {
             error: 0.0,
             steering: false,
             jumps: 0,
+            cuts: 0,
             scratch: Vec::new(),
         }
     }
@@ -196,6 +199,7 @@ impl Timeline {
             }
         } else if gap < -TOLERANCE {
             self.jump();
+            self.cuts += 1;
             let drop = ((-gap) as usize * 2).min(input.len());
             input = &input[drop..];
         } else {
@@ -213,6 +217,12 @@ impl Timeline {
     /// Gaps filled with silence or overlaps cut so far. Drift alone never causes one.
     pub fn jumps(&self) -> u64 {
         self.jumps
+    }
+
+    /// Overlaps cut so far: audio delivered for time already filled, which is always a fault. Gaps
+    /// are the rest of `jumps`, and also what a loopback source does when nothing is playing.
+    pub fn cuts(&self) -> u64 {
+        self.cuts
     }
 
     fn append(&mut self, stereo: &[f32]) {
@@ -374,6 +384,7 @@ mod tests {
         let mut t = Timeline::default();
         t.push(0, &[1.0, 1.0]);
         t.push(5000, &[2.0, 2.0]);
+        assert_eq!((t.jumps(), t.cuts()), (1, 0));
         let out = pull(&mut t, 0, 5001);
         assert_eq!(out[0], 1.0);
         assert_eq!(out[2], 0.0);
@@ -396,6 +407,7 @@ mod tests {
         let mut next = vec![2.0; 4000];
         next[2 * 1500] = 3.0;
         t.push(500, &next); // 1500 frames early
+        assert_eq!((t.jumps(), t.cuts()), (1, 1));
         let out = pull(&mut t, 0, 2001);
         assert_eq!(out[2 * 1999], 1.0);
         assert_eq!(out[2 * 2000], 3.0);

@@ -45,6 +45,10 @@ pub struct Fake {
     /// Report capture as paused after this many frames, as the lock screen does, and keep
     /// encoding the last image.
     pause_after: u32,
+    /// Skip one frame in every this many, as capture missing its time under load does.
+    drop_every: u32,
+    /// Deliver one block in every this many as overlapping the last, which the mixer has to cut.
+    glitch_every: u32,
 }
 
 impl Fake {
@@ -63,6 +67,8 @@ impl Fake {
             audio_fails: AtomicU32::new(number("TAPE_FAKE_AUDIO_FAILS")),
             no_aac: number("TAPE_FAKE_NO_AAC") != 0,
             pause_after: number("TAPE_FAKE_PAUSE_AFTER"),
+            drop_every: number("TAPE_FAKE_DROP_EVERY"),
+            glitch_every: number("TAPE_FAKE_GLITCH_EVERY"),
         }
     }
 }
@@ -71,6 +77,8 @@ struct Tone {
     clock: Clock,
     next: i64,
     fails: u32,
+    glitch_every: u32,
+    blocks: u32,
 }
 
 impl AudioInput for Tone {
@@ -89,7 +97,10 @@ impl AudioInput for Tone {
         }
         let frames = (now - self.next).max(0) as usize;
         if frames > 0 {
-            out.push(AudioBlock { at: self.next, stereo: vec![0.1; frames * 2] });
+            self.blocks += 1;
+            // 50 ms early: well past what the timeline steers out.
+            let early = if self.glitch_every > 0 && self.blocks.is_multiple_of(self.glitch_every) { 2400 } else { 0 };
+            out.push(AudioBlock { at: self.next - early, stereo: vec![0.1; frames * 2], discontinuity: false });
             self.next = now;
         }
         Ok(())
@@ -178,6 +189,10 @@ impl Backend for Fake {
             produced += 1;
             index += 1;
             next_tick += period;
+            if self.drop_every > 0 && produced.is_multiple_of(self.drop_every) {
+                next_tick += period;
+                ctx.stats.dropped.fetch_add(1, Ordering::Relaxed);
+            }
             let wait = next_tick - ctx.clock.now_us();
             if wait > 0 {
                 std::thread::sleep(Duration::from_micros(wait as u64));
@@ -187,7 +202,7 @@ impl Backend for Fake {
 
     fn open_audio(&self, _source: Source, _device: &str, clock: Clock) -> Result<Box<dyn AudioInput>, String> {
         let fails = self.audio_fails.swap(0, Ordering::Relaxed);
-        Ok(Box::new(Tone { clock, next: 0, fails }))
+        Ok(Box::new(Tone { clock, next: 0, fails, glitch_every: self.glitch_every, blocks: 0 }))
     }
 
     fn aac_encoder(&self) -> Result<Box<dyn AacEncoder>, String> {

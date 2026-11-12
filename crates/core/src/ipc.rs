@@ -45,6 +45,49 @@ pub struct AudioSource {
     pub problem: Option<String>,
 }
 
+/// Things that went wrong without stopping anything, which show in clips as stutter or crackle.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct QualityCounts {
+    /// Frames capture couldn't deliver by their time, which the video skips.
+    pub dropped_frames: u64,
+    /// Frames that took longer than a frame's time to capture, convert and encode.
+    pub late_frames: u64,
+    /// Overlaps cut, lost packets, and for the mic gaps filled with silence: game audio, then mic.
+    pub system_glitches: u64,
+    pub mic_glitches: u64,
+    /// Times the recording's writer fell far behind, or the disk couldn't keep up at all.
+    pub slow_disk: u64,
+}
+
+impl QualityCounts {
+    /// What happened between `earlier` and these.
+    pub fn since(&self, earlier: &QualityCounts) -> QualityCounts {
+        QualityCounts {
+            dropped_frames: self.dropped_frames.saturating_sub(earlier.dropped_frames),
+            late_frames: self.late_frames.saturating_sub(earlier.late_frames),
+            system_glitches: self.system_glitches.saturating_sub(earlier.system_glitches),
+            mic_glitches: self.mic_glitches.saturating_sub(earlier.mic_glitches),
+            slow_disk: self.slow_disk.saturating_sub(earlier.slow_disk),
+        }
+    }
+
+    pub fn is_clean(&self) -> bool {
+        *self == QualityCounts::default()
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Quality {
+    /// Since replay or recording started.
+    pub total: QualityCounts,
+    pub seconds: f32,
+    /// The last `recent_seconds`, at most a few minutes.
+    pub recent: QualityCounts,
+    pub recent_seconds: f32,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Status {
@@ -65,6 +108,7 @@ pub struct Status {
     pub restarts: u32,
     /// Where a clip saved now would go.
     pub game: String,
+    pub quality: Quality,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

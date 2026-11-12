@@ -176,6 +176,7 @@ fn check_encode(out: &mut String, settings: &Settings, codec: Codec, label: &str
         mic_delay_ms: AtomicU32::new(0),
         system: Mutex::new(None),
         mic: Mutex::new(None),
+        ..Default::default()
     });
     let audio_thread = {
         let settings = settings.clone();

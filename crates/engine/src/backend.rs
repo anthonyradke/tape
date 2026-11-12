@@ -42,6 +42,8 @@ pub struct VideoStats {
     pub beat_ms: AtomicU64,
     pub encoded: AtomicU64,
     pub dropped: AtomicU64,
+    /// Frames that took longer than a frame's time from capture to bitstream.
+    pub late: AtomicU64,
     pub encode_us: AtomicU32,
     pub bytes: AtomicU64,
     pub width: AtomicU32,
@@ -67,6 +69,7 @@ pub struct VideoContext {
     pub stats: Arc<VideoStats>,
 }
 
+#[derive(Default)]
 pub struct AudioShared {
     /// Percent, live: volume changes need no restart.
     pub system_volume: AtomicU32,
@@ -75,6 +78,9 @@ pub struct AudioShared {
     pub mic_delay_ms: AtomicU32,
     pub system: Mutex<Option<AudioSource>>,
     pub mic: Mutex<Option<AudioSource>>,
+    /// Audio glitches so far, for the quality counters. See `QualityCounts`.
+    pub system_glitches: AtomicU64,
+    pub mic_glitches: AtomicU64,
 }
 
 #[derive(Clone)]
@@ -89,6 +95,8 @@ pub struct AudioContext {
 pub struct AudioBlock {
     pub at: i64,
     pub stereo: Vec<f32>,
+    /// The device says audio was lost just before this block.
+    pub discontinuity: bool,
 }
 
 pub trait AudioInput {

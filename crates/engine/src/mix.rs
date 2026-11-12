@@ -2,7 +2,7 @@
 //! only silences that source and is retried; it never stops the thread or touches video.
 
 use std::collections::VecDeque;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -42,6 +42,8 @@ struct Channel {
     timeline: Timeline,
     blocks: Vec<AudioBlock>,
     block: Vec<f32>,
+    /// What `glitches` has already been told about the timeline.
+    counted: u64,
 }
 
 impl Channel {
@@ -54,6 +56,25 @@ impl Channel {
             timeline: Timeline::default(),
             blocks: Vec::new(),
             block: vec![0.0; AAC_FRAME * 2],
+            counted: 0,
+        }
+    }
+
+    fn glitches<'a>(&self, shared: &'a AudioShared) -> &'a AtomicU64 {
+        match self.source {
+            Source::System => &shared.system_glitches,
+            Source::Mic => &shared.mic_glitches,
+        }
+    }
+
+    /// Overlaps are always a fault. A gap is one only in a microphone, which delivers all the time;
+    /// loopback leaves gaps whenever nothing is playing.
+    fn count_glitches(&mut self, shared: &AudioShared, lost: u64) {
+        let faults = self.timeline.cuts() + if self.source == Source::Mic { self.timeline.jumps() - self.timeline.cuts() } else { 0 };
+        let new = faults - self.counted.min(faults) + lost;
+        self.counted = faults;
+        if new > 0 {
+            self.glitches(shared).fetch_add(new, Ordering::Relaxed);
         }
     }
 
@@ -91,6 +112,8 @@ impl Channel {
         for b in &self.blocks {
             self.timeline.push(b.at, &b.stereo);
         }
+        let lost = self.blocks.iter().filter(|b| b.discontinuity).count() as u64;
+        self.count_glitches(&ctx.shared, lost);
     }
 
     fn fail(&self, shared: &AudioShared, problem: String) {
@@ -139,6 +162,10 @@ pub fn run(backend: &dyn Backend, settings: &Settings, ctx: &AudioContext) -> Re
         let now = ctx.clock.now_samples();
         if now - next > MAX_BEHIND {
             next = now - MIX_DELAY;
+            // Every source lost what the skip passed over.
+            for c in &channels {
+                c.glitches(&ctx.shared).fetch_add(1, Ordering::Relaxed);
+            }
         }
         // A late mic is read from further along its timeline, which means waiting that much longer
         // for it to arrive.

@@ -3,7 +3,7 @@
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -14,6 +14,43 @@ use crate::packet::{Packet, Tracks};
 /// About 30 s of packets at 60 fps with two audio tracks.
 const QUEUE: usize = 4096;
 const FILE_BUFFER: usize = 1 << 20;
+
+/// Counts the times the writer falls behind: once each time the packets waiting pass `high`, and
+/// not again until they're back down to `low`, so one slow stretch counts once.
+struct Backlog {
+    waiting: AtomicUsize,
+    behind: AtomicBool,
+    high: usize,
+    low: usize,
+    events: Arc<AtomicU64>,
+}
+
+impl Backlog {
+    fn new(high: usize, low: usize, events: Arc<AtomicU64>) -> Self {
+        Backlog { waiting: AtomicUsize::new(0), behind: AtomicBool::new(false), high, low, events }
+    }
+
+    fn queued(&self) {
+        let waiting = self.waiting.fetch_add(1, Ordering::Relaxed) + 1;
+        if waiting >= self.high && !self.behind.swap(true, Ordering::Relaxed) {
+            self.events.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// One packet less waiting: written, or never queued after all.
+    fn done(&self) {
+        let waiting = self.waiting.fetch_sub(1, Ordering::Relaxed).saturating_sub(1);
+        if waiting <= self.low {
+            self.behind.store(false, Ordering::Relaxed);
+        }
+    }
+
+    /// The queue overflowed, which always counts.
+    fn overflowed(&self) {
+        self.behind.store(true, Ordering::Relaxed);
+        self.events.fetch_add(1, Ordering::Relaxed);
+    }
+}
 
 #[derive(Debug)]
 pub struct Finished {
@@ -29,10 +66,16 @@ pub struct Recorder {
     bytes: Arc<AtomicU64>,
     failed: Arc<Mutex<Option<String>>>,
     overflowed: AtomicBool,
+    backlog: Arc<Backlog>,
 }
 
 impl Recorder {
     pub fn start(path: &Path, tracks: &Tracks) -> Result<Recorder, String> {
+        Recorder::start_counting(path, tracks, Arc::default())
+    }
+
+    /// `start`, adding to `slow_disk` each time the disk falls well behind.
+    pub fn start_counting(path: &Path, tracks: &Tracks, slow_disk: Arc<AtomicU64>) -> Result<Recorder, String> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("can't create {}: {e}", dir.display()))?;
         }
@@ -44,12 +87,14 @@ impl Recorder {
         let bytes = Arc::new(AtomicU64::new(0));
         let failed = Arc::new(Mutex::new(None));
         let tracks = tracks.clone();
-        let (b, f, p) = (bytes.clone(), failed.clone(), path.to_path_buf());
+        let backlog = Arc::new(Backlog::new(QUEUE / 2, QUEUE / 4, slow_disk));
+        let (b, f, p, waiting) = (bytes.clone(), failed.clone(), path.to_path_buf(), backlog.clone());
         let thread = std::thread::Builder::new()
             .name("recording".into())
             .spawn(move || {
                 let mut error = None;
                 while let Ok(packet) = rx.recv() {
+                    waiting.done();
                     if error.is_some() {
                         continue; // keep draining so the sender never blocks
                     }
@@ -89,6 +134,7 @@ impl Recorder {
             bytes,
             failed,
             overflowed: AtomicBool::new(false),
+            backlog,
         })
     }
 
@@ -104,8 +150,15 @@ impl Recorder {
     /// rather than holding up the replay buffer.
     pub fn push(&self, packet: Packet) {
         if let Some(tx) = &self.tx {
-            if let Err(TrySendError::Full(_)) = tx.try_send(packet) {
+            // Counted before sending, so the writer can never take it off first.
+            self.backlog.queued();
+            let sent = tx.try_send(packet);
+            if sent.is_err() {
+                self.backlog.done();
+            }
+            if let Err(TrySendError::Full(_)) = sent {
                 if !self.overflowed.swap(true, Ordering::Relaxed) {
+                    self.backlog.overflowed();
                     *self.failed.lock().unwrap() = Some("recording stopped, the disk is too slow to keep up".into());
                 }
             }
@@ -141,6 +194,36 @@ mod tests {
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("tape-record-{}", std::process::id()));
         dir.join(name)
+    }
+
+    #[test]
+    fn a_slow_stretch_counts_once_until_the_queue_drains() {
+        let events = Arc::new(AtomicU64::new(0));
+        let backlog = Backlog::new(4, 1, events.clone());
+        let count = || events.load(Ordering::Relaxed);
+        for _ in 0..3 {
+            backlog.queued();
+        }
+        assert_eq!(count(), 0);
+        backlog.queued();
+        backlog.queued();
+        assert_eq!(count(), 1);
+        // Drains to 2: still behind, so passing the mark again isn't a new event.
+        for _ in 0..3 {
+            backlog.done();
+        }
+        backlog.queued();
+        backlog.queued();
+        assert_eq!(count(), 1);
+        for _ in 0..4 {
+            backlog.done();
+        }
+        for _ in 0..4 {
+            backlog.queued();
+        }
+        assert_eq!(count(), 2);
+        backlog.overflowed();
+        assert_eq!(count(), 3);
     }
 
     #[test]

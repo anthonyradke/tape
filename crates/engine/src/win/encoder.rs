@@ -354,7 +354,7 @@ impl Encoder {
             picture.outputBitstream = self.bitstream;
             picture.pictureStruct = NV_ENC_PIC_STRUCT_FRAME;
             if force_key {
-                picture.encodePicFlags = (NV_ENC_PIC_FLAG_FORCEIDR | NV_ENC_PIC_FLAG_OUTPUT_SPSPPS) as u32;
+                picture.encodePicFlags = NV_ENC_PIC_FLAG_FORCEIDR | NV_ENC_PIC_FLAG_OUTPUT_SPSPPS;
             }
             self.frame = self.frame.wrapping_add(1);
 

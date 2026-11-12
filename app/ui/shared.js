@@ -278,13 +278,21 @@ const Cloud = (() => {
     }
   });
 
+  const active = (job) => job.stage === "converting" || job.stage === "uploading";
+
+  // Every window hears these, not only the one that started the share, so each drops the job once
+  // it's done or failed (a cancel ends as "failed" too).
   listen("share", (e) => {
     const job = e.payload;
-    if (job.stage === "converting" || job.stage === "uploading") jobs.set(job.path, job);
+    if (active(job)) jobs.set(job.path, job);
+    else jobs.delete(job.path);
     changed();
   });
   listen("share-usage", (e) => set(e.payload));
-  invoke("share_jobs").then((list) => list.forEach((j) => jobs.set(j.path, j)));
+  invoke("share_jobs").then((list) => {
+    list.filter(active).forEach((j) => jobs.set(j.path, j));
+    changed();
+  });
 
   return { load, ring, bars, linkRows, linkFor, share, label, onChange, left, usage: () => usage, tone };
 })();

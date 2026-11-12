@@ -135,6 +135,7 @@
           usage.clips.unshift(l);
           usage.used += l.bytes;
           emit("share-usage", structuredClone(usage));
+          emit("share", { path: args.path, stage: "done", progress: 1, url: l.url }); // as the app does, to every window
           return l.url;
         }
         if (cmd === "save_clip") return emit("saved", "C:\\Users\\me\\Videos\\Tape\\Counter-Strike 2\\Counter-Strike 2 2026.11.01 - 21.30.00.11.DVR.mp4");

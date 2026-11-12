@@ -274,6 +274,7 @@ pub fn do_toggle_recording(app: &AppHandle) {
             cue::play(Cue::RecordingStarted);
         }
     }
+    tray::refresh(app);
     let _ = app.emit("changed", ());
 }
 

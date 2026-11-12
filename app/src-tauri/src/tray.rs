@@ -1,3 +1,4 @@
+use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 
 use tauri::image::Image;
@@ -11,8 +12,11 @@ use crate::{supervisor, update};
 
 const TRAY_ID: &str = "tape";
 
+/// Light, recording wanted, replay on, problem, update on offer.
+type Shown = (Light, bool, bool, Option<String>, Option<String>);
+
 /// What the tray currently shows, to avoid touching it when nothing changed.
-static SHOWN: Mutex<Option<(Light, bool, bool, Option<String>, Option<String>)>> = Mutex::new(None);
+static SHOWN: Mutex<Option<Shown>> = Mutex::new(None);
 
 fn icon(light: Light) -> tauri::Result<Image<'static>> {
     let bytes: &[u8] = match light {
@@ -28,17 +32,21 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let shared = app.state::<Shared>();
     let settings = shared.settings.lock().unwrap().clone();
     let recording = shared.status.lock().unwrap().recording;
+    // Not the status: after an engine crash mid-recording that says stopped while the supervisor
+    // brings it back, and "Start recording" there would cancel the resume.
+    let wanted = shared.recording_wanted.load(Ordering::Relaxed);
     let menu = Menu::new(app)?;
     let label = |text: &str, key: &str| if key.is_empty() { text.to_string() } else { format!("{text}\t{key}") };
     let keys = &settings.hotkeys;
     menu.append(&MenuItem::with_id(app, "clip", label("Save clip", &keys.save_clip), settings.replay, None::<&str>)?)?;
-    let record = if recording { "Stop recording" } else { "Start recording" };
+    let record = if wanted { "Stop recording" } else { "Start recording" };
     menu.append(&MenuItem::with_id(app, "record", label(record, &keys.toggle_recording), true, None::<&str>)?)?;
     menu.append(&CheckMenuItem::with_id(app, "replay", label("Instant replay", &keys.toggle_replay), true, settings.replay, None::<&str>)?)?;
     menu.append(&PredefinedMenuItem::separator(app)?)?;
     if let Some(version) = update::status(app).available {
         // Updating restarts the engine, so it waits for a recording to end.
-        menu.append(&MenuItem::with_id(app, "update", format!("Update to tape {version}"), !recording, None::<&str>)?)?;
+        let free = !recording && !wanted;
+        menu.append(&MenuItem::with_id(app, "update", format!("Update to tape {version}"), free, None::<&str>)?)?;
     }
     menu.append(&MenuItem::with_id(app, "folder", "Open clips folder", true, None::<&str>)?)?;
     menu.append(&MenuItem::with_id(app, "open", "Open tape", true, None::<&str>)?)?;
@@ -85,9 +93,9 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
 pub fn refresh(app: &AppHandle) {
     let shared = app.state::<Shared>();
     let health = shared.health.lock().unwrap().clone();
-    let recording = shared.status.lock().unwrap().recording;
+    let wanted = shared.recording_wanted.load(Ordering::Relaxed);
     let replay = shared.settings.lock().unwrap().replay;
-    let now = (health.light, recording, replay, health.problem.clone(), update::status(app).available);
+    let now = (health.light, wanted, replay, health.problem.clone(), update::status(app).available);
     {
         let mut shown = SHOWN.lock().unwrap();
         if shown.as_ref() == Some(&now) {

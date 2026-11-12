@@ -10,6 +10,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -56,10 +59,26 @@ jobs:
           $report = "$env:RUNNER_TEMP\self-test.txt"
           $p = Start-Process -FilePath target\release\tape.exe -ArgumentList "--self-test", $report -Wait -PassThru
           "exit code $($p.ExitCode)"
-          Get-Content $report
           Copy-Item "$env:TEMP\tape-selftest.aac" $env:RUNNER_TEMP -ErrorAction SilentlyContinue
-          if (Select-String -Path $report -Pattern "FAILED" -Quiet) { "::warning::the self-test reported failures" }
-          if (-not (Test-Path $report)) { exit 1 }
+          if ($p.ExitCode -ne 0 -or -not (Test-Path $report)) { "::error::the self-test didn't write its report"; exit 1 }
+          $lines = Get-Content $report
+          $lines
+          # What a hosted runner can run has to pass: displays, both capture APIs, the pointer shaders,
+          # AAC, and a shared-link copy if one was made. Encode and the WASAPI lines need hardware it
+          # doesn't have, so failures there are only shown.
+          $section = ""
+          $bad = @()
+          foreach ($l in $lines) {
+            if ($l -match '^\S') { $section = $l; continue } # section names aren't indented
+            if ($l -notmatch 'FAILED') { continue }
+            if ($section -in "Displays", "Capture", "Sharing" -or $l -match '^\s+AAC:') { $bad += "${section}: $($l.Trim())" }
+            else { "::warning::self-test, ${section}: $($l.Trim())" }
+          }
+          foreach ($need in "Desktop Duplication", "Windows Graphics Capture", "Pointer overlay", "AAC") {
+            if (-not ($lines -match "^\s+${need}: OK")) { $bad += "no `"${need}: OK`" line" }
+          }
+          $bad | ForEach-Object { "::error::self-test, $_" }
+          if ($bad) { exit 1 }
 
       - name: Get the fake engine's video and audio
         uses: actions/download-artifact@v4
@@ -168,7 +187,9 @@ jobs:
           echo "video: $v  audio: $a"
           IFS=, read -r codec width height rate <<< "$v"
           fps=$(awk -F/ '{ printf "%.0f", $1 / $2 }' <<< "$rate")
-          [ "$codec,$width,$height,$fps" = "h264,1920,1080,60" ] && [ "$a" = "aac" ]
+          # One test per line: under bash -e only the last part of an && list stops the script.
+          test "$codec,$width,$height,$fps" = "h264,1920,1080,60"
+          test "$a" = "aac"
           # moov before mdat, so a link starts playing before the whole file has downloaded.
           python3 -c "import struct,sys; d=open(sys.argv[1],'rb').read(); o=0; t=[]
           while o < len(d): s,k=struct.unpack('>I4s',d[o:o+8]); s=struct.unpack('>Q',d[o+8:o+16])[0] if s==1 else s; t.append(k); o+=s

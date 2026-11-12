@@ -6,8 +6,17 @@
 use std::collections::VecDeque;
 
 /// Differences below this between where a packet says it belongs and where the timeline has got
-/// to are clock jitter, not gaps.
+/// to are clock jitter or drift, not gaps, and are steered out slowly instead of filled or cut.
 const TOLERANCE: i64 = 960;
+/// A device's clock runs a little fast or slow against the engine's, 50-100 ppm is common. Past
+/// this many samples of smoothed error the timeline starts stretching or squeezing the audio.
+const DRIFT_DEADBAND: f64 = 96.0;
+/// Rate change per sample of error, and its limit: 0.1%, inaudible as pitch, corrects up to
+/// 1000 ppm.
+const DRIFT_GAIN: f64 = 1e-6;
+const MAX_DRIFT_ADJUST: f64 = 0.001;
+/// Weight of each packet in the smoothed error, so timestamp jitter doesn't wobble the rate.
+const DRIFT_SMOOTHING: f64 = 0.05;
 /// How long the mixer waits for late packets before a block is encoded, in samples.
 pub const MIX_DELAY: i64 = 7200;
 const MAX_BUFFERED: usize = 48_000 * 4;
@@ -40,26 +49,51 @@ pub fn to_stereo(input: &[f32], channels: usize, out: &mut Vec<f32>) {
 /// Stereo sample rate conversion by Catmull-Rom interpolation. Only runs for devices that aren't
 /// already at 48 kHz.
 pub struct Resampler {
+    /// Input frames per output frame.
     step: f64,
+    nominal: f64,
     position: f64,
     history: [[f32; 2]; 3],
+    /// Equal rates and never adjusted: samples are copied as they are.
+    passthrough: bool,
 }
 
 impl Resampler {
     pub fn new(from: u32, to: u32) -> Self {
-        Resampler { step: from as f64 / to as f64, position: 0.0, history: [[0.0; 2]; 3] }
+        let step = from as f64 / to as f64;
+        Resampler { step, nominal: step, position: 0.0, history: [[0.0; 2]; 3], passthrough: step == 1.0 }
     }
 
     pub fn is_identity(&self) -> bool {
-        self.step == 1.0
+        self.passthrough
+    }
+
+    /// Runs `scale` times faster through the input than the rates say, to follow a clock that
+    /// drifts. Once used, samples are always interpolated, so switching never skips any.
+    pub fn set_speed(&mut self, scale: f64) {
+        self.step = self.nominal * scale;
+        self.passthrough = false;
+    }
+
+    /// Where the next output frame comes from, in input frames from the start of the next buffer:
+    /// zero or a little below, for the frames held back to interpolate.
+    pub fn position(&self) -> f64 {
+        if self.passthrough { 0.0 } else { self.position }
+    }
+
+    /// Forgets the frames held back, for a jump in the stream.
+    pub fn restart(&mut self) {
+        self.position = 0.0;
+        self.history = [[0.0; 2]; 3];
     }
 
     pub fn process(&mut self, input: &[f32], out: &mut Vec<f32>) {
-        if self.is_identity() {
-            out.extend_from_slice(input);
+        let frames = input.len() / 2;
+        if self.passthrough {
+            out.extend_from_slice(&input[..frames * 2]);
+            self.remember(input);
             return;
         }
-        let frames = input.len() / 2;
         let at = |i: isize, c: usize, h: &[[f32; 2]; 3]| -> f32 {
             if i < 0 {
                 h[(3 + i) as usize][c]
@@ -87,6 +121,19 @@ impl Resampler {
             self.position += self.step;
         }
         self.position -= frames as f64;
+        self.remember(input);
+    }
+
+    /// Keeps the last three frames, which the next buffer interpolates from.
+    fn remember(&mut self, input: &[f32]) {
+        let frames = input.len() / 2;
+        let at = |i: isize, c: usize, h: &[[f32; 2]; 3]| -> f32 {
+            if i < 0 {
+                h[(3 + i) as usize][c]
+            } else {
+                input[i as usize * 2 + c]
+            }
+        };
         for k in 0..3 {
             let i = frames as isize - 3 + k as isize;
             let frame = [at(i, 0, &self.history), at(i, 1, &self.history)];
@@ -96,10 +143,30 @@ impl Resampler {
 }
 
 /// One source's samples, indexed by position on the shared timeline.
-#[derive(Default)]
 pub struct Timeline {
     base: Option<i64>,
     samples: VecDeque<f32>,
+    /// Stretches or squeezes the audio by a fraction of a percent to follow the device's clock.
+    drift: Resampler,
+    /// Packet timestamps less where the timeline has got to, averaged.
+    error: f64,
+    steering: bool,
+    jumps: u64,
+    scratch: Vec<f32>,
+}
+
+impl Default for Timeline {
+    fn default() -> Self {
+        Timeline {
+            base: None,
+            samples: VecDeque::new(),
+            drift: Resampler::new(crate::packet::AUDIO_RATE, crate::packet::AUDIO_RATE),
+            error: 0.0,
+            steering: false,
+            jumps: 0,
+            scratch: Vec::new(),
+        }
+    }
 }
 
 impl Timeline {
@@ -107,16 +174,19 @@ impl Timeline {
         self.base.map(|b| b + self.samples.len() as i64 / 2)
     }
 
-    /// Adds stereo samples whose first frame belongs at `at`.
+    /// Adds stereo samples whose first frame belongs at `at`. Small differences between that and
+    /// where the timeline has got to are drift and are steered out by changing the rate a little;
+    /// only real gaps and overlaps are filled with silence or cut.
     pub fn push(&mut self, at: i64, stereo: &[f32]) {
         let Some(end) = self.end() else {
             self.base = Some(at);
-            self.samples.extend(stereo);
+            self.append(stereo);
             return;
         };
         let gap = at - end;
         let mut input = stereo;
         if gap > TOLERANCE {
+            self.jump();
             let fill = (gap as usize).min(MAX_BUFFERED);
             self.samples.extend(std::iter::repeat_n(0.0, fill * 2));
             if gap as usize > MAX_BUFFERED {
@@ -125,15 +195,49 @@ impl Timeline {
                 self.base = Some(at);
             }
         } else if gap < -TOLERANCE {
+            self.jump();
             let drop = ((-gap) as usize * 2).min(input.len());
             input = &input[drop..];
+        } else {
+            // The next frame out of the resampler is the one `position` frames into this packet.
+            self.steer(at as f64 + self.drift.position() - end as f64);
         }
-        self.samples.extend(input);
+        self.append(input);
         let excess = self.samples.len().saturating_sub(MAX_BUFFERED * 2);
         if excess > 0 {
             self.samples.drain(..excess - excess % 2);
             self.base = self.base.map(|b| b + (excess / 2) as i64);
         }
+    }
+
+    /// Gaps filled with silence or overlaps cut so far. Drift alone never causes one.
+    pub fn jumps(&self) -> u64 {
+        self.jumps
+    }
+
+    fn append(&mut self, stereo: &[f32]) {
+        self.scratch.clear();
+        self.drift.process(stereo, &mut self.scratch);
+        self.samples.extend(&self.scratch);
+    }
+
+    fn jump(&mut self) {
+        self.jumps += 1;
+        self.drift.restart();
+        self.error = 0.0;
+    }
+
+    /// Proportional: the rate goes off nominal in step with the smoothed error, which settles
+    /// where the change matches the drift (about 100 samples at 100 ppm).
+    fn steer(&mut self, error: f64) {
+        self.error += (error - self.error) * DRIFT_SMOOTHING;
+        if !self.steering && self.error.abs() < DRIFT_DEADBAND {
+            return; // a device in step with the clock is copied untouched
+        }
+        self.steering = true;
+        // Behind (positive error) needs more output per input, so a smaller step through it.
+        let adjust = (self.error * DRIFT_GAIN).clamp(-MAX_DRIFT_ADJUST, MAX_DRIFT_ADJUST);
+        self.drift.set_speed(1.0 - adjust);
     }
 
     /// Fills `out` with `out.len() / 2` frames starting at `from`, silent wherever nothing was
@@ -304,6 +408,64 @@ mod tests {
         t.push(48_000 * 3600, &[2.0, 2.0]);
         assert!(t.samples.len() <= 2);
         assert_eq!(pull(&mut t, 48_000 * 3600, 1), [2.0, 2.0]);
+    }
+
+    /// Ten minutes of a device whose clock runs `ppm` off the engine's, in 10 ms packets with
+    /// timestamp jitter, read back by a mixer the way mix.rs does. Returns the timeline and every
+    /// frame read, with the timeline's error at the end.
+    fn drifting(ppm: f64) -> (Timeline, Vec<f32>, f64) {
+        let mut t = Timeline::default();
+        let mut out = Vec::new();
+        let mut next = -MIX_DELAY;
+        let mut block = vec![0.0; 1024 * 2];
+        let packet = vec![1.0f32; 480 * 2];
+        let mut seed = 1u32;
+        let mut worst = 0.0f64;
+        for k in 0..60_000i64 {
+            // 480 device samples take 480 / (1 + ppm) samples of engine time.
+            let true_at = k as f64 * 480.0 / (1.0 + ppm * 1e-6);
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            let jitter = (seed >> 16) as f64 / 65_536.0 * 96.0 - 48.0;
+            t.push((true_at + jitter).round() as i64, &packet);
+            if k > 6_000 {
+                // Where the newest sample sits against where its timestamp says.
+                let error = true_at + 480.0 - t.end().unwrap() as f64;
+                worst = worst.max(error.abs());
+            }
+            let now = (true_at + 480.0) as i64;
+            while next + 1024 + MIX_DELAY <= now {
+                t.pull(next, &mut block);
+                out.extend_from_slice(&block);
+                next += 1024;
+            }
+        }
+        (t, out, worst)
+    }
+
+    #[test]
+    fn clock_drift_is_steered_out_without_gaps() {
+        for ppm in [100.0, -100.0, 50.0] {
+            let (t, out, worst) = drifting(ppm);
+            assert_eq!(t.jumps(), 0, "{ppm} ppm: silence inserted or audio dropped");
+            // The mixer starts MIX_DELAY before the first packet; from there on every frame read
+            // must be sound.
+            let holes = out.iter().skip(2 * 8 * 1024).filter(|s| **s < 0.99).count();
+            assert_eq!(holes, 0, "{ppm} ppm: {holes} silent samples");
+            // Settles near 100 samples at 100 ppm; the timeline never drifts near the tolerance.
+            assert!(worst < 400.0, "{ppm} ppm: off by {worst} samples");
+        }
+    }
+
+    #[test]
+    fn a_device_in_step_is_copied_untouched() {
+        let mut t = Timeline::default();
+        for k in 0..100 {
+            let packet: Vec<f32> = (0..960).map(|i| ((k * 960 + i) % 7) as f32).collect();
+            t.push(k as i64 * 480 + (k % 3) as i64 * 20 - 20, &packet);
+        }
+        assert!(t.drift.is_identity());
+        let out = pull(&mut t, -20, 4);
+        assert_eq!(out, [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 0.0]);
     }
 
     #[test]

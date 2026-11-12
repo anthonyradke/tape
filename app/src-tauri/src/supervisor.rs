@@ -299,11 +299,11 @@ fn handle(app: &AppHandle, event: Event, alarm: &mut Alarm) {
             let _ = app.emit("saved", path);
             let _ = app.emit("changed", ());
         }
-        Event::Error { message, clip } => {
+        Event::Error { message, clip, stopped } => {
             if clip && sounds {
                 cue::play(Cue::Failed);
             }
-            if !clip {
+            if stopped {
                 // The engine stopped the recording itself.
                 shared.recording_wanted.store(false, Ordering::Relaxed);
             }

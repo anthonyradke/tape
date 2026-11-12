@@ -280,7 +280,7 @@ impl Engine {
 
     fn save_clip(&mut self) {
         if !self.settings.replay {
-            let _ = self.events.send(Event::Error { message: "Instant replay is off".into(), clip: true });
+            let _ = self.events.send(Event::Error { message: "Instant replay is off".into(), clip: true, stopped: false });
             return;
         }
         let (sink, events, seconds) = (self.sink.clone(), self.events.clone(), self.settings.replay_seconds);
@@ -294,8 +294,8 @@ impl Engine {
                 thread::sleep(Duration::from_millis(10));
             }
             let event = match sink.clip_until(seconds, end) {
-                None if sink.replay_seconds() > 0.0 => Event::Error { message: "Nothing new since the last clip".into(), clip: true },
-                None => Event::Error { message: "Nothing has been buffered yet".into(), clip: true },
+                None if sink.replay_seconds() > 0.0 => Event::Error { message: "Nothing new since the last clip".into(), clip: true, stopped: false },
+                None => Event::Error { message: "Nothing has been buffered yet".into(), clip: true, stopped: false },
                 Some(clip) => match write_file(&path, &clip) {
                     Ok(bytes) => {
                         log!("saved clip {} ({bytes} bytes)", path.display());
@@ -304,7 +304,7 @@ impl Engine {
                     Err(e) => {
                         log!("clip failed: {e}");
                         sink.clip_failed(&clip);
-                        Event::Error { message: format!("Couldn't save the clip: {e}"), clip: true }
+                        Event::Error { message: format!("Couldn't save the clip: {e}"), clip: true, stopped: false }
                     }
                 },
             };
@@ -322,7 +322,7 @@ impl Engine {
 
     fn stop_recording(&mut self) {
         if let Some(finished) = self.sink.stop_recording() {
-            self.report(finished);
+            self.report(finished, true);
         }
         if let Some(settings) = self.deferred.take() {
             self.configure(settings);
@@ -330,11 +330,12 @@ impl Engine {
         self.reconcile();
     }
 
-    fn report(&self, finished: Finished) {
+    /// `stopped`: the recording has ended, rather than going on in a file split off from this one.
+    fn report(&self, finished: Finished, stopped: bool) {
         log!("recording finished {} ({} bytes)", finished.path.display(), finished.bytes);
         if let Some(message) = &finished.error {
             log!("recording error: {message}");
-            let _ = self.events.send(Event::Error { message: message.clone(), clip: false });
+            let _ = self.events.send(Event::Error { message: message.clone(), clip: false, stopped });
         }
         if finished.bytes > 0 {
             let path = finished.path.display().to_string();
@@ -348,11 +349,11 @@ impl Engine {
 
     fn poll(&mut self) {
         for finished in self.sink.take_finished() {
-            self.report(finished);
+            self.report(finished, false);
         }
         if let Some(message) = self.sink.take_failure() {
             log!("recording problem: {message}");
-            let _ = self.events.send(Event::Error { message, clip: false });
+            let _ = self.events.send(Event::Error { message, clip: false, stopped: true });
             self.stop_recording();
         }
     }
@@ -537,7 +538,7 @@ pub fn run(backend: Arc<dyn Backend>, input: impl BufRead + Send + 'static, mut 
 
     log!("engine stopping");
     if let Some(finished) = engine.sink.stop_recording() {
-        engine.report(finished);
+        engine.report(finished, true);
     }
     // Pipeline threads aren't joined here: if one is what's stuck, joining would hang the exit.
     engine.stats.running.store(false, Ordering::Relaxed);

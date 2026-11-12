@@ -108,5 +108,29 @@ pub enum Event {
     Probe { probe: Box<Probe> },
     Saved { kind: SavedKind, path: String, bytes: u64 },
     /// `clip` is set when this is the answer to a save request, so the host can play the failure cue.
-    Error { message: String, clip: bool },
+    /// `stopped` is set when the recording has ended. An error in a file that was split off while
+    /// the recording goes on in the next one leaves it unset.
+    Error {
+        message: String,
+        clip: bool,
+        #[serde(default)]
+        stopped: bool,
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn messages_from_an_older_engine_still_parse() {
+        let event: Event = serde_json::from_str(r#"{"evt":"error","message":"x","clip":false}"#).unwrap();
+        assert!(matches!(event, Event::Error { stopped: false, .. }));
+    }
+
+    #[test]
+    fn new_fields_are_sent() {
+        let line = serde_json::to_string(&Event::Error { message: "x".into(), clip: false, stopped: true }).unwrap();
+        assert!(line.contains(r#""stopped":true"#), "{line}");
+    }
 }

@@ -15,6 +15,7 @@ use crate::state::Shared;
 #[derive(Clone, Copy)]
 enum Action {
     SaveClip,
+    ShortClip,
     ToggleRecording,
     ToggleReplay,
     Overlay,
@@ -40,6 +41,7 @@ pub fn plugin() -> TauriPlugin<Wry> {
             let action = BINDINGS.lock().unwrap().iter().find(|(id, _)| *id == shortcut.id()).map(|(_, a)| *a);
             match action {
                 Some(Action::SaveClip) => commands::do_save_clip(app),
+                Some(Action::ShortClip) => commands::do_save_short_clip(app),
                 Some(Action::ToggleRecording) => commands::do_toggle_recording(app),
                 Some(Action::ToggleReplay) => commands::do_toggle_replay(app),
                 Some(Action::Overlay) => overlay::toggle(app),
@@ -53,9 +55,10 @@ pub fn plugin() -> TauriPlugin<Wry> {
         .build()
 }
 
-fn wanted(keys: &Hotkeys) -> [(&String, Action); 5] {
+fn wanted(keys: &Hotkeys) -> [(&String, Action); 6] {
     [
         (&keys.save_clip, Action::SaveClip),
+        (&keys.short_clip, Action::ShortClip),
         (&keys.toggle_recording, Action::ToggleRecording),
         (&keys.toggle_replay, Action::ToggleReplay),
         (&keys.overlay, Action::Overlay),

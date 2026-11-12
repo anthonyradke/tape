@@ -106,6 +106,7 @@ fn main() {
             commands::view,
             commands::save_settings,
             commands::save_clip,
+            commands::save_short_clip,
             commands::toggle_recording,
             commands::toggle_replay,
             commands::open_folder,

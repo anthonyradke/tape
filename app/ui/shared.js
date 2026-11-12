@@ -9,10 +9,13 @@ const $ = (id) => document.getElementById(id);
 const FPS = [30, 60, 120, 144, 165, 240];
 const HEIGHTS = [[2160, "2160p (4K)"], [1440, "1440p (2K)"], [1080, "1080p"], [720, "720p"]];
 const LENGTHS = [[30, "30 seconds"], [60, "1 minute"], [120, "2 minutes"], [300, "5 minutes"], [600, "10 minutes"], [900, "15 minutes"], [1200, "20 minutes"]];
+const SHORT_LENGTHS = [[15, "15 seconds"], [30, "30 seconds"], [60, "1 minute"]];
+// "30 s" under a minute, "1:30" from there, as the save buttons say it.
+const span = (seconds) => (seconds < 60 ? `${Math.floor(seconds)} s` : clock(seconds));
 const CODECS = [["h264", "H.264", "plays everywhere"], ["hevc", "HEVC", "smaller files, less widely playable"], ["av1", "AV1", "smallest files, newest GPUs only"]];
 const PRESETS = [["fast", "Fast"], ["balanced", "Balanced"], ["quality", "Quality"]];
 const METHODS = [["auto", "Automatic"], ["duplication", "Desktop Duplication"], ["graphics", "Windows Graphics Capture"]];
-const KEYS = [["saveClip", "Save clip"], ["toggleRecording", "Record"], ["marker", "Add marker"], ["toggleReplay", "Instant replay"], ["overlay", "Overlay"]];
+const KEYS = [["saveClip", "Save clip"], ["shortClip", "Save short clip"], ["toggleRecording", "Record"], ["marker", "Add marker"], ["toggleReplay", "Instant replay"], ["overlay", "Overlay"]];
 
 let view = null;
 let toastTimer = 0;

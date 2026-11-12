@@ -26,6 +26,7 @@ function render() {
     <div class="ov-more"><button class="btn sm ghost press" data-act="settings">All settings</button></div>`;
   $("k-clip").textContent = s.hotkeys.saveClip;
   $("k-rec").textContent = s.hotkeys.toggleRecording;
+  $("k-short").textContent = s.hotkeys.shortClip;
   renderReplaySwitch();
   renderStatus(status);
 }
@@ -58,6 +59,10 @@ function renderStatus(s) {
 
   $("b-clip").disabled = !s.replayOn;
   $("b-clip-text").textContent = s.replayOn ? `Save last ${clock(Math.min(s.clipSeconds, s.replayTarget))}` : "Save clip";
+  // What the short key saves right now: its length, or less right after another clip.
+  const short = Math.min(view.settings.shortClipSeconds, s.replayTarget);
+  $("b-short").disabled = !s.replayOn;
+  $("b-short-text").textContent = s.replayOn ? `Save last ${span(Math.min(s.clipSeconds, short))}` : "Save short clip";
   $("b-rec").className = s.recording ? "btn big press stop" : "btn big press";
   $("b-rec-text").textContent = s.recording ? "Stop recording" : "Start recording";
 }
@@ -90,6 +95,7 @@ document.addEventListener("click", (e) => {
   switch (act) {
     case "hide": return hide();
     case "clip": return invoke("save_clip");
+    case "short-clip": return invoke("save_short_clip");
     case "record": return invoke("toggle_recording");
     case "settings": return invoke("open_main");
     case "links": return invoke("open_main");

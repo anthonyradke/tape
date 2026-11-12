@@ -296,12 +296,14 @@ impl Engine {
         self.reconcile();
     }
 
-    fn save_clip(&mut self) {
+    /// `seconds`: at most this much, never more than the replay length. None for all of it.
+    fn save_clip(&mut self, seconds: Option<u32>) {
         if !self.settings.replay {
             let _ = self.events.send(Event::Error { message: "Instant replay is off".into(), clip: true, stopped: false });
             return;
         }
-        let (sink, events, seconds) = (self.sink.clone(), self.events.clone(), self.settings.replay_seconds);
+        let full = self.settings.replay_seconds;
+        let (sink, events, seconds) = (self.sink.clone(), self.events.clone(), seconds.map_or(full, |s| s.clamp(1, full)));
         // Anything played in the last `seconds` is in the clip.
         let path = self.output_path(ClipKind::Replay, Duration::from_secs(seconds as u64));
         // The clip ends at the newest frame now; the next one starts at the keyframe this asks for.
@@ -541,7 +543,7 @@ pub fn run(backend: Arc<dyn Backend>, input: impl BufRead + Send + 'static, mut 
         let wait = next_status.saturating_duration_since(Instant::now());
         match commands_rx.recv_timeout(wait) {
             Ok(Command::Configure { settings }) => engine.configure(*settings),
-            Ok(Command::SaveClip) => engine.save_clip(),
+            Ok(Command::SaveClip { seconds }) => engine.save_clip(seconds),
             Ok(Command::StartRecording) => engine.start_recording(),
             Ok(Command::StopRecording) => engine.stop_recording(),
             Ok(Command::AddMarker) => {

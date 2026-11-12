@@ -33,6 +33,7 @@ function renderSettings() {
 
   html.push(`<section class="sec"><h3>Instant replay</h3><div class="card">
     ${row("Keep the last", select("replaySeconds", LENGTHS, s.replaySeconds))}
+    ${row("Short clip", select("shortClipSeconds", shortLengths(), s.shortClipSeconds))}
     <p class="note">Held in memory, never written to disk until you save. Uses up to ${bytes(view.replayRam)} of RAM at this bitrate.</p>
   </div></section>`);
 
@@ -88,6 +89,14 @@ function exclusionNote() {
   if (!s.excludeTapeAudio) return "";
   if (system?.running && !system.excludesTape) return `<p class="note warn">Windows didn't let tape leave its own sounds out, so its cues and clips played here are in game audio. The log says why.</p>`;
   return `<p class="note">The save and record sounds, and clips played in tape, stay out of game audio.</p>`;
+}
+
+// Only lengths the replay buffer holds, plus a saved one that isn't on the list.
+function shortLengths() {
+  const s = view.settings;
+  const options = SHORT_LENGTHS.filter(([v]) => v <= s.replaySeconds);
+  if (!options.some(([v]) => v === s.shortClipSeconds)) options.push([s.shortClipSeconds, `${span(Math.min(s.shortClipSeconds, s.replaySeconds))}`]);
+  return options;
 }
 
 function renderSharing() {

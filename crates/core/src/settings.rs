@@ -26,6 +26,8 @@ pub struct Hotkeys {
     pub toggle_recording: String,
     pub toggle_replay: String,
     pub overlay: String,
+    /// Saves only the last `Settings::short_clip_seconds`.
+    pub short_clip: String,
     /// Marks a moment in a recording.
     pub marker: String,
 }
@@ -38,6 +40,8 @@ impl Default for Hotkeys {
             toggle_recording: "Alt+F9".into(),
             toggle_replay: "Alt+Shift+F10".into(),
             overlay: "Alt+Z".into(),
+            // Beside the save key. Neither Windows nor the NVIDIA app uses it.
+            short_clip: "Alt+F11".into(),
             // Next to record. ShadowPlay had it for broadcasting, which the NVIDIA app dropped.
             marker: "Alt+F8".into(),
         }
@@ -65,6 +69,8 @@ pub struct Settings {
     pub show_cursor: bool,
     pub replay: bool,
     pub replay_seconds: u32,
+    /// Length of a clip from the short clip key, cut to the replay length if that's shorter.
+    pub short_clip_seconds: u32,
     /// Output device to record: "default" follows Windows, "" records none, otherwise an id.
     pub system_audio: String,
     /// Leave tape's own sounds (its cues and clips played in it) out of game audio. Windows can
@@ -100,6 +106,7 @@ impl Default for Settings {
             show_cursor: true,
             replay: true,
             replay_seconds: 120,
+            short_clip_seconds: 30,
             system_audio: FOLLOW_DEFAULT.into(),
             exclude_tape_audio: true,
             microphone: NO_DEVICE.into(),
@@ -146,6 +153,7 @@ impl Settings {
         self.fps = self.fps.clamp(15, 360);
         self.bitrate_mbps = self.bitrate_mbps.clamp(1, 500);
         self.replay_seconds = self.replay_seconds.clamp(5, 3600);
+        self.short_clip_seconds = self.short_clip_seconds.clamp(5, 3600);
         self.system_volume = self.system_volume.min(200);
         self.mic_volume = self.mic_volume.min(200);
         self.mic_delay_ms = self.mic_delay_ms.min(MAX_MIC_DELAY_MS);

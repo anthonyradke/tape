@@ -9,7 +9,11 @@ use crate::settings::Settings;
 #[serde(tag = "cmd", rename_all = "camelCase")]
 pub enum Command {
     Configure { settings: Box<Settings> },
-    SaveClip,
+    /// `seconds` asks for at most that much, for the short clip key; None is the replay length.
+    SaveClip {
+        #[serde(default)]
+        seconds: Option<u32>,
+    },
     StartRecording,
     StopRecording,
     SetReplay { on: bool },
@@ -193,6 +197,14 @@ mod tests {
         assert!(matches!(event, Event::Error { stopped: false, .. }));
         let status: Status = serde_json::from_str(r#"{"video":{"running":true,"problem":"x"}}"#).unwrap();
         assert!(!status.video.transient);
+    }
+
+    #[test]
+    fn a_save_without_a_length_is_a_full_one() {
+        let command: Command = serde_json::from_str(r#"{"cmd":"saveClip"}"#).unwrap();
+        assert!(matches!(command, Command::SaveClip { seconds: None }));
+        let command: Command = serde_json::from_str(r#"{"cmd":"saveClip","seconds":30}"#).unwrap();
+        assert!(matches!(command, Command::SaveClip { seconds: Some(30) }));
     }
 
     #[test]

@@ -192,6 +192,30 @@ fn replay_clip_has_the_requested_length_and_is_named_for_the_game() {
 }
 
 #[test]
+fn a_short_clip_keeps_only_its_length_and_the_next_clip_follows_it() {
+    if !have_ffmpeg() {
+        return;
+    }
+    let mut e = Engine::start("short", &[]);
+    e.configure(json!({"replaySeconds": 10, "microphone": ""}));
+    e.wait_status(20, "8 s buffered", |s| s["replaySeconds"].as_f64().unwrap() >= 8.0);
+    e.send(json!({"cmd": "saveClip", "seconds": 3}));
+    let event = e.wait(10, "short clip", |ev| ev["evt"] == "saved" || ev["evt"] == "error");
+    assert_eq!(event["evt"], "saved", "{event}");
+    let short = seconds(&probe(&saved(&event)));
+    // Clips start on a keyframe, one a second here, so up to a second more than asked.
+    assert!((3.0..=4.2).contains(&short), "short clip is {short} s");
+    decode_clean(&saved(&event));
+    // More than the replay length is the replay length.
+    e.wait_status(10, "2 s more", |s| s["clipSeconds"].as_f64().unwrap() >= 2.0);
+    e.send(json!({"cmd": "saveClip", "seconds": 600}));
+    let event = e.wait(10, "full clip", |ev| ev["evt"] == "saved" || ev["evt"] == "error");
+    assert_eq!(event["evt"], "saved", "{event}");
+    let next = seconds(&probe(&saved(&event)));
+    assert!(next < 4.0, "the full clip must start where the short one ended, not repeat it: {next} s");
+}
+
+#[test]
 fn a_second_clip_starts_where_the_first_ended() {
     if !have_ffmpeg() {
         return;

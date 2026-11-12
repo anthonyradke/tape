@@ -112,6 +112,7 @@ function renderReplaySwitch() {
 
 async function refresh() {
   view = await invoke("view");
+  Cloud.follow(view.settings);
   render();
 }
 
@@ -120,6 +121,7 @@ async function save(change) {
   change(settings);
   view.settings = settings; // shown right away, confirmed by the reply
   view = await invoke("save_settings", { settings });
+  Cloud.follow(view.settings);
   render();
 }
 
@@ -218,12 +220,30 @@ const Cloud = (() => {
     changed();
   }
 
+  let asked = 0;
+
+  // Only the newest answer counts, so one from a server just switched away from can't land last.
   async function load(fresh) {
+    const mine = ++asked;
     try {
-      set(await invoke("share_usage", { fresh: !!fresh }));
+      const u = await invoke("share_usage", { fresh: !!fresh });
+      if (mine === asked) set(u);
     } catch (err) {
-      if (fresh) toast(String(err), true);
+      if (fresh && mine === asked) toast(String(err), true);
     }
+  }
+
+  // A different share server or key makes the usage and links shown so far someone else's. The app
+  // drops its copy on saving; this drops the page's and asks again. Either window may have changed it.
+  let server;
+  function follow(settings) {
+    const now = `${settings.shareServer}\n${settings.shareKey}`;
+    if (server !== undefined && now !== server) {
+      usage = null;
+      changed();
+      load(false);
+    }
+    server = now;
   }
 
   const linkFor = (key) => usage?.clips.find((l) => l.source === key && l.expires > Date.now());
@@ -294,7 +314,7 @@ const Cloud = (() => {
     changed();
   });
 
-  return { load, ring, bars, linkRows, linkFor, share, label, onChange, left, usage: () => usage, tone };
+  return { load, follow, ring, bars, linkRows, linkFor, share, label, onChange, left, usage: () => usage, tone };
 })();
 
 // ---------- gallery ----------

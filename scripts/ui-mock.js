@@ -104,7 +104,7 @@
           return 20;
         }
         if (cmd === "clip_info" && view.clips.find((x) => x.path === args.path)?.unfinished) throw "Can't trim this file: this file was never finished, so it can't be trimmed.";
-        if (cmd === "clip_info") return { duration: 20, keyframes: Array.from({ length: 10 }, (_, i) => i * 2) };
+        if (cmd === "clip_info") return { duration: 20, keyframes: Array.from({ length: 10 }, (_, i) => i * 2), markers: [5.3, 12.8] };
         if (cmd === "trim_clip") {
           const c = view.clips.find((x) => x.path === args.path);
           const name = c.name.replace(/(\.DVR)?\.mp4$/i, (end) => ` trim${end}`);

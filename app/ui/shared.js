@@ -759,7 +759,7 @@ const Gallery = (() => {
 
   // ---------- trim ----------
 
-  // While open: { path, keyframes, duration, start, end, saving }.
+  // While open: { path, keyframes, markers, duration, start, end, saving }.
   let trim = null;
   let frame = 0;
 
@@ -768,6 +768,13 @@ const Gallery = (() => {
 
   // A cut can only start where a keyframe is, so the start handle jumps between them.
   const snap = (t) => trim.keyframes.reduce((best, k) => (k <= t + 0.001 ? Math.max(best, k) : best), trim.keyframes[0] || 0);
+
+  // Chapter marks (from the marker key) pull a dragged handle onto them from this close.
+  const MARKER_PULL = 0.5;
+  const toMarker = (t) => {
+    const near = trim.markers.reduce((best, m) => (Math.abs(m - t) < Math.abs(best - t) ? m : best), Infinity);
+    return Math.abs(near - t) <= MARKER_PULL ? near : t;
+  };
 
   async function openTrim() {
     const clip = playing();
@@ -781,10 +788,12 @@ const Gallery = (() => {
       return toast(String(err), true);
     }
     if (playing()?.path !== clip.path) return;
-    trim = { path: clip.path, keyframes: info.keyframes, duration: info.duration, start: 0, end: info.duration, saving: false };
+    const markers = info.markers || [];
+    trim = { path: clip.path, keyframes: info.keyframes, markers, duration: info.duration, start: 0, end: info.duration, saving: false };
     const ticks = info.keyframes.length <= 400 ? info.keyframes.map((k) => `<i style="left:${(k / info.duration) * 100}%"></i>`).join("") : "";
+    const marks = markers.map((m) => `<b style="left:${(m / info.duration) * 100}%" title="Marker at ${fine(m)}"></b>`).join("");
     $("player-trim").innerHTML = `<div class="trim-track" id="trim-track">
-        <div class="trim-keys">${ticks}</div>
+        <div class="trim-keys">${ticks}${marks}</div>
         <div class="trim-sel" id="trim-sel"></div>
         <div class="trim-head" id="trim-head"></div>
         <div class="trim-handle" id="trim-start" data-edge="start" role="slider" aria-label="Start" title="Start. Arrow keys move it a keyframe at a time." tabindex="0"></div>
@@ -849,8 +858,9 @@ const Gallery = (() => {
     if (!dragging && !v.paused && (v.currentTime >= trim.end || v.currentTime < trim.start - 0.25)) v.currentTime = trim.start;
   }
 
-  function setEdge(edge, t) {
-    t = Math.max(0, Math.min(trim.duration, t));
+  // `exact` is for the arrow keys, which step past a marker rather than sticking to it.
+  function setEdge(edge, t, exact) {
+    t = Math.max(0, Math.min(trim.duration, exact ? t : toMarker(t)));
     if (edge === "start") trim.start = Math.min(snap(t), snap(Math.max(0, trim.end - 0.5)));
     else trim.end = Math.max(t, trim.start + 0.5);
     trim.end = Math.min(trim.end, trim.duration);
@@ -886,16 +896,16 @@ const Gallery = (() => {
     if (!trim || !handle || !(e.key in steps || e.key === "Home" || e.key === "End")) return;
     e.preventDefault();
     const edge = handle.dataset.edge;
-    if (e.key === "Home" || e.key === "End") return setEdge(edge, e.key === "Home" ? 0 : trim.duration);
+    if (e.key === "Home" || e.key === "End") return setEdge(edge, e.key === "Home" ? 0 : trim.duration, true);
     const back = steps[e.key] < 0;
     if (edge === "start") {
       // Keyframe by keyframe.
       const keys = trim.keyframes;
       const i = keys.findIndex((k) => Math.abs(k - trim.start) < 0.001);
       const next = keys[Math.max(0, Math.min(keys.length - 1, i + (back ? -1 : 1)))];
-      if (next != null) setEdge("start", next);
+      if (next != null) setEdge("start", next, true);
     } else {
-      setEdge("end", trim.end + (back ? -1 : 1) * (e.shiftKey ? 1 : 0.1));
+      setEdge("end", trim.end + (back ? -1 : 1) * (e.shiftKey ? 1 : 0.1), true);
     }
   });
 

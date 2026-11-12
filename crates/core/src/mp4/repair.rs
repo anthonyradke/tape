@@ -181,6 +181,7 @@ fn read_header(moov: &[u8]) -> io::Result<(u32, Vec<Building>)> {
             }
         }
         let track = Track {
+            id,
             video,
             timescale: track_timescale,
             samples: Vec::new(),
@@ -383,7 +384,7 @@ fn repair_with(path: &Path, mut sync: impl FnMut(&mut File) -> io::Result<()>) -
     }
     let seconds = video.track.samples.iter().map(|s| s.duration as f64).sum::<f64>() / video.track.timescale as f64;
 
-    let movie = Movie { ftyp: None, moov, timescale, tracks: Vec::new() };
+    let movie = Movie { chapter_tracks: Vec::new(), ftyp: None, moov, timescale, tracks: Vec::new() };
     let cuts: Vec<Cut> = tracks
         .iter()
         .enumerate()
@@ -400,7 +401,7 @@ fn repair_with(path: &Path, mut sync: impl FnMut(&mut File) -> io::Result<()>) -
         })
         .collect();
     let wide = cuts.iter().flat_map(|c| &c.chunks).any(|c| c.0 > u32::MAX as u64);
-    let index = new_moov(&movie, &cuts, wide)?;
+    let index = new_moov(&movie, &cuts, wide, None)?;
 
     // From here on the file changes, each step leaving one that plays: first the fragment that was
     // cut short goes, then the index is added after the fragments, which players ignore until the

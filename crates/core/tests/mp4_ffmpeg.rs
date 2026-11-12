@@ -609,3 +609,42 @@ fn a_repair_drops_a_fragment_cut_short() {
     decode_clean(&path);
     assert_eq!(frames_of(&probe(&path), "video"), [120]);
 }
+
+/// Chapter marks ffmpeg wrote show up as markers, and a trim keeps the ones inside the cut where
+/// ffmpeg reads them back.
+#[test]
+fn trimming_keeps_chapters_inside_the_cut() {
+    if !have_ffmpeg() {
+        return;
+    }
+    use tape_core::mp4::trim::{info, trim};
+    let (tracks, packets) = stream(Codec::H264, 1, 0);
+    let plain = tmp("chapters-src.mp4");
+    clip(&plain, &tracks, &packets);
+    let meta = tmp("chapters.txt");
+    fs::write(&meta, ";FFMETADATA1\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=1500\ntitle=Start\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=1500\nEND=2700\ntitle=Ace\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=2700\nEND=5000\ntitle=Clutch\n").unwrap();
+    let path = tmp("chapters.mp4");
+    ffmpeg(&["-i", plain.to_str().unwrap(), "-i", meta.to_str().unwrap(), "-map", "0", "-map_chapters", "1", "-c", "copy", path.to_str().unwrap()]);
+    let i = info(&path).unwrap();
+    assert_eq!(i.markers.len(), 2, "{:?}", i.markers);
+    assert!((i.markers[0] - 1.5).abs() < 0.001 && (i.markers[1] - 2.7).abs() < 0.001, "{:?}", i.markers);
+
+    let out = tmp("chapters-trimmed.mp4");
+    trim(&path, &out, 2.0, 4.0).unwrap();
+    decode_clean(&out);
+    let list = Command::new("ffprobe").args(["-v", "error", "-show_chapters", "-of", "json"]).arg(&out).output().unwrap();
+    let chapters: Value = serde_json::from_slice(&list.stdout).unwrap();
+    let chapters = chapters["chapters"].as_array().unwrap();
+    let got: Vec<(f64, String)> = chapters
+        .iter()
+        .map(|c| (c["start_time"].as_str().unwrap().parse().unwrap(), c["tags"]["title"].as_str().unwrap_or("").to_string()))
+        .collect();
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert_eq!(got[0].1, "Ace");
+    assert!(got[0].0.abs() < 0.001);
+    assert_eq!(got[1].1, "Clutch");
+    assert!((got[1].0 - 0.7).abs() < 0.001, "{got:?}");
+    let i = info(&out).unwrap();
+    assert_eq!(i.markers.len(), 1);
+    assert!((i.markers[0] - 0.7).abs() < 0.001);
+}

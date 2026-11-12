@@ -8,6 +8,9 @@
 //! start with the sample playing at that moment and get an edit list that lines them up again.
 //! Works for any non-fragmented MP4, not only tape's: clips copied over from the NVIDIA app have
 //! B-frames (`ctts`) and edit lists of their own, which are taken into account.
+//!
+//! Chapter marks (Nero `chpl`, what ffmpeg writes and reads for MP4) come along: `info` lists them
+//! for the player to show and snap to, and the trimmed file keeps the ones inside the cut.
 
 use std::fs::File;
 use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
@@ -87,6 +90,7 @@ pub(super) struct Sample {
 }
 
 pub(super) struct Track {
+    pub id: u32,
     pub video: bool,
     pub timescale: u32,
     pub samples: Vec<Sample>,
@@ -106,6 +110,9 @@ impl Track {
 }
 
 pub(super) struct Movie {
+    /// Ids of QuickTime text tracks that hold chapter titles (`tref/chap`), which ffmpeg adds
+    /// beside `chpl`. Trimming drops them: they can't be cut like media, and `chpl` says the same.
+    pub chapter_tracks: Vec<u32>,
     pub ftyp: Option<Vec<u8>>,
     pub moov: Vec<u8>,
     pub timescale: u32,
@@ -232,6 +239,11 @@ fn read_track(trak: &Child, file_len: u64) -> io::Result<Track> {
     let mdia = children(find(&kids, b"mdia").ok_or_else(|| invalid("track without media"))?.body)?;
     let (version, mdhd) = full_body(find(&mdia, b"mdhd").ok_or_else(|| invalid("no mdhd"))?)?;
     let timescale = be32(mdhd, if version == 1 { 16 } else { 8 })?;
+    // Only needed to recognise a chapter track, so a track without one still reads.
+    let id = match find(&kids, b"tkhd") {
+        Some(c) => full_body(c).and_then(|(version, b)| be32(b, if version == 1 { 16 } else { 8 })).unwrap_or(0),
+        None => 0,
+    };
     let (_, hdlr) = full_body(find(&mdia, b"hdlr").ok_or_else(|| invalid("no hdlr"))?)?;
     let video = hdlr.get(4..8) == Some(b"vide");
     let minf = children(find(&mdia, b"minf").ok_or_else(|| invalid("no minf"))?.body)?;
@@ -242,7 +254,7 @@ fn read_track(trak: &Child, file_len: u64) -> io::Result<Track> {
     if timescale == 0 {
         return Err(invalid("track has no timescale"));
     }
-    Ok(Track { video, timescale, samples, has_ctts, ctts_version, has_stss, empty, media_time })
+    Ok(Track { id, video, timescale, samples, has_ctts, ctts_version, has_stss, empty, media_time })
 }
 
 fn read_movie(file: &mut File) -> io::Result<Movie> {
@@ -273,7 +285,15 @@ fn read_movie(file: &mut File) -> io::Result<Movie> {
     if timescale == 0 {
         return Err(invalid("movie has no timescale"));
     }
-    Ok(Movie { ftyp, timescale, tracks, moov })
+    let mut chapter_tracks = Vec::new();
+    for trak in kids.iter().filter(|c| &c.kind == b"trak") {
+        let inner = children(trak.body)?;
+        let Some(tref) = find(&inner, b"tref") else { continue };
+        for chap in children(tref.body)?.iter().filter(|c| &c.kind == b"chap") {
+            chapter_tracks.extend(chap.body.as_chunks::<4>().0.iter().map(|id| u32::from_be_bytes(*id)));
+        }
+    }
+    Ok(Movie { chapter_tracks, ftyp, timescale, tracks, moov })
 }
 
 fn main_video(movie: &Movie) -> io::Result<&Track> {
@@ -287,6 +307,62 @@ pub struct Info {
     pub duration: f64,
     /// Where each keyframe shows, in seconds. A trim can only start on one of these.
     pub keyframes: Vec<f64>,
+    /// Chapter marks inside the video, in seconds.
+    pub markers: Vec<f64>,
+}
+
+/// Nero chapters, `moov/udta/chpl`: (start in seconds, title). Version 1, as ffmpeg writes it, has
+/// four more bytes before the count. Starts are in 100 ns units.
+fn read_chapters(moov: &[u8]) -> Vec<(f64, String)> {
+    let parse = || -> io::Result<Vec<(f64, String)>> {
+        let kids = children(&moov[8..])?;
+        let Some(udta) = find(&kids, b"udta") else { return Ok(Vec::new()) };
+        let inner = children(udta.body)?;
+        let Some(chpl) = find(&inner, b"chpl") else { return Ok(Vec::new()) };
+        let (version, b) = full_body(chpl)?;
+        let mut at = if version == 1 { 4 } else { 0 };
+        let count = *b.get(at).ok_or_else(|| invalid("short box"))?;
+        at += 1;
+        let mut out = Vec::new();
+        for _ in 0..count {
+            let start = be64(b, at)?;
+            let len = *b.get(at + 8).ok_or_else(|| invalid("short box"))? as usize;
+            let title = b.get(at + 9..at + 9 + len).ok_or_else(|| invalid("short box"))?;
+            out.push((start as f64 / HUNDRED_NS, String::from_utf8_lossy(title).into_owned()));
+            at += 9 + len;
+        }
+        Ok(out)
+    };
+    parse().unwrap_or_default()
+}
+
+const HUNDRED_NS: f64 = 10_000_000.0;
+
+/// The `chpl` for `chapters`, in ffmpeg's version 1 layout.
+fn write_chapters(o: &mut Vec<u8>, chapters: &[(f64, String)]) {
+    full(o, b"chpl", 1, 0, |o| {
+        o.u32(0);
+        let count = chapters.len().min(255);
+        o.push(count as u8);
+        for (start, title) in &chapters[..count] {
+            o.u64((start.max(0.0) * HUNDRED_NS).round() as u64);
+            // At most 255 bytes, cut on a character boundary.
+            let mut end = title.len().min(255);
+            while !title.is_char_boundary(end) {
+                end -= 1;
+            }
+            o.push(end as u8);
+            o.extend_from_slice(&title.as_bytes()[..end]);
+        }
+    });
+}
+
+/// The chapters a cut from `begin` to `finish` keeps, moved to its start: one at zero for the
+/// chapter already playing at `begin`, then every one that starts inside.
+fn chapters_between(chapters: &[(f64, String)], begin: f64, finish: f64) -> Vec<(f64, String)> {
+    let playing = chapters.iter().rfind(|c| c.0 <= begin + EPSILON).map(|c| (0.0, c.1.clone()));
+    let inside = chapters.iter().filter(|c| c.0 > begin + EPSILON && c.0 < finish - EPSILON).map(|c| (c.0 - begin, c.1.clone()));
+    playing.into_iter().chain(inside).collect()
 }
 
 pub fn info(path: &Path) -> io::Result<Info> {
@@ -295,7 +371,9 @@ pub fn info(path: &Path) -> io::Result<Info> {
     let at = |s: &Sample| video.seconds(s, movie.timescale);
     let duration = video.samples.iter().map(|s| at(s) + s.duration as f64 / video.timescale as f64).fold(0.0, f64::max);
     let keyframes = video.samples.iter().filter(|s| s.key).map(at).map(|t| t.max(0.0)).collect();
-    Ok(Info { duration, keyframes })
+    // A chapter at the very start or end marks nothing a cut could use.
+    let markers = read_chapters(&movie.moov).into_iter().map(|c| c.0).filter(|&t| t > EPSILON && t < duration - EPSILON).collect();
+    Ok(Info { duration, keyframes, markers })
 }
 
 /// Which samples of a track the trimmed file keeps.
@@ -372,6 +450,9 @@ pub fn trim(from: &Path, to: &Path, start: f64, end: f64) -> io::Result<(f64, f6
 
     let mut cuts = Vec::new();
     for (index, track) in movie.tracks.iter().enumerate() {
+        if movie.chapter_tracks.contains(&track.id) {
+            continue;
+        }
         let range = if std::ptr::eq(track, video) {
             Some((first, last))
         } else {
@@ -427,11 +508,12 @@ pub fn trim(from: &Path, to: &Path, start: f64, end: f64) -> io::Result<(f64, f6
         }
     };
     let ftyp = movie.ftyp.clone().unwrap_or_default();
+    let chapters = chapters_between(&read_chapters(&movie.moov), begin, finish);
     place(&mut cuts, 0);
-    let sized = new_moov(&movie, &cuts, wide)?.len() as u64;
+    let sized = new_moov(&movie, &cuts, wide, Some(&chapters))?.len() as u64;
     let data_at = ftyp.len() as u64 + sized + 16;
     place(&mut cuts, data_at);
-    let moov = new_moov(&movie, &cuts, wide)?;
+    let moov = new_moov(&movie, &cuts, wide, Some(&chapters))?;
     debug_assert_eq!(moov.len() as u64, sized);
 
     let temporary = to.with_extension("trim.tmp");
@@ -502,8 +584,8 @@ fn header_len(c: &Child) -> usize {
 
 /// The original `moov` with new sample tables, durations and edit lists. Tracks left with nothing
 /// in range are dropped, and so is `mvex` (only a repaired recording has one); every other box is
-/// copied as it was.
-pub(super) fn new_moov(movie: &Movie, cuts: &[Cut], wide: bool) -> io::Result<Vec<u8>> {
+/// copied as it was. `chapters`, when given, replace any the original had.
+pub(super) fn new_moov(movie: &Movie, cuts: &[Cut], wide: bool, chapters: Option<&[(f64, String)]>) -> io::Result<Vec<u8>> {
     let ts = movie.timescale;
     let longest = cuts.iter().map(|c| c.presented(ts)).max().unwrap_or(0);
     let mut out = Vec::new();
@@ -516,19 +598,41 @@ pub(super) fn new_moov(movie: &Movie, cuts: &[Cut], wide: bool) -> io::Result<Ve
                 b"trak" => {
                     if let Some(cut) = cuts.iter().find(|x| x.index == track) {
                         // Parsed fine once already, in read_movie.
-                        let _ = new_trak(o, c, cut, ts, wide);
+                        let _ = new_trak(o, c, cut, ts, wide, chapters.is_some());
                     }
                     track += 1;
                 }
                 b"mvex" => {}
+                b"udta" if chapters.is_some() => {
+                    let _ = new_udta(o, c, chapters.unwrap_or_default());
+                }
                 _ => o.extend_from_slice(c.whole),
+            }
+        }
+        // A file without user data gets some only to carry chapters.
+        if let Some(list) = chapters.filter(|l| !l.is_empty()) {
+            if find(&kids, b"udta").is_none() {
+                bx(o, b"udta", |o| write_chapters(o, list));
             }
         }
     });
     Ok(out)
 }
 
-fn new_trak(o: &mut Vec<u8>, trak: &Child, cut: &Cut, movie_timescale: u32, wide: bool) -> io::Result<()> {
+fn new_udta(o: &mut Vec<u8>, udta: &Child, chapters: &[(f64, String)]) -> io::Result<()> {
+    let kids = children(udta.body)?;
+    bx(o, b"udta", |o| {
+        for c in kids.iter().filter(|c| &c.kind != b"chpl") {
+            o.extend_from_slice(c.whole);
+        }
+        if !chapters.is_empty() {
+            write_chapters(o, chapters);
+        }
+    });
+    Ok(())
+}
+
+fn new_trak(o: &mut Vec<u8>, trak: &Child, cut: &Cut, movie_timescale: u32, wide: bool, chapters: bool) -> io::Result<()> {
     let kids = children(trak.body)?;
     bx(o, b"trak", |o| {
         for c in &kids {
@@ -538,6 +642,13 @@ fn new_trak(o: &mut Vec<u8>, trak: &Child, cut: &Cut, movie_timescale: u32, wide
                     edit_list(o, cut, movie_timescale);
                 }
                 b"edts" => {}
+                // Points at a chapter track, which a trim drops.
+                b"tref" if chapters => {
+                    let inner = children(c.body).unwrap_or_default();
+                    if inner.iter().any(|r| &r.kind != b"chap") {
+                        bx(o, b"tref", |o| inner.iter().filter(|r| &r.kind != b"chap").for_each(|r| o.extend_from_slice(r.whole)));
+                    }
+                }
                 b"mdia" => {
                     let _ = new_mdia(o, c, cut, wide);
                 }
@@ -692,7 +803,7 @@ mod tests {
 
     #[test]
     fn snaps_back_to_the_keyframe_before() {
-        let info = Info { duration: 10.0, keyframes: vec![0.0, 2.0, 4.0, 6.0] };
+        let info = Info { duration: 10.0, keyframes: vec![0.0, 2.0, 4.0, 6.0], markers: vec![] };
         assert_eq!(snap(&info, 3.9), 2.0);
         assert_eq!(snap(&info, 4.0), 4.0);
         assert_eq!(snap(&info, 0.0), 0.0);
@@ -825,6 +936,20 @@ mod tests {
             o.u64(u64::MAX - 3);
         });
         assert!(info(&path).is_err());
+    }
+
+    #[test]
+    fn chapters_round_trip_and_follow_the_cut() {
+        let list = vec![(0.0, "Start".to_string()), (2.5, "Ace".to_string()), (7.25, "é".repeat(200))];
+        let mut moov = Vec::new();
+        bx(&mut moov, b"moov", |o| bx(o, b"udta", |o| write_chapters(o, &list)));
+        let read = read_chapters(&moov);
+        assert_eq!(read.len(), 3);
+        assert_eq!(read[1], (2.5, "Ace".to_string()));
+        assert_eq!(read[2].1, "é".repeat(127), "cut to 255 bytes on a character boundary");
+        let kept = chapters_between(&list, 2.0, 7.0);
+        assert_eq!(kept, [(0.0, "Start".to_string()), (0.5, "Ace".to_string())]);
+        assert!(chapters_between(&[], 1.0, 2.0).is_empty());
     }
 
     #[test]

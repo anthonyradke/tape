@@ -302,6 +302,7 @@ body[data-tab="settings"] .page:not(#page-settings) { display: none; }
 .trim[hidden] { display: none; }
 .trim-track { position: relative; height: 36px; margin: 0 7px; border-radius: var(--r-md); background: var(--muted); box-shadow: inset 0 0 0 1px var(--border); cursor: pointer; touch-action: none; }
 .trim-keys i { position: absolute; bottom: 0; width: 1px; height: 7px; background: rgba(255, 255, 255, .22); }
+.trim-keys b { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--warn); opacity: .85; }
 .trim-sel { position: absolute; top: 0; bottom: 0; background: oklch(57.1% .21 264 / .22); box-shadow: inset 0 2px 0 var(--primary), inset 0 -2px 0 var(--primary); pointer-events: none; }
 .trim-head { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--fg); pointer-events: none; }
 .trim-handle { position: absolute; top: -2px; bottom: -2px; width: 14px; margin-left: -7px; border-radius: 4px; background: var(--primary); cursor: ew-resize; box-shadow: 0 1px 3px rgba(0, 0, 0, .5); }

@@ -2,6 +2,7 @@
 //! give clean names without a database. A small table covers games they don't, and anything else
 //! counts as a game only if it fills a monitor without a title bar.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -89,22 +90,49 @@ const NOT_FULLSCREEN_GAMES: &[&str] = &[
     "wmplayer.exe",
 ];
 
-pub fn identify(app: &Foreground) -> Seen {
-    let parts: Vec<&str> = app.exe.split(['\\', '/']).filter(|p| !p.is_empty()).collect();
+/// What the executable's path alone says. Working it out can read Steam's manifests, so the
+/// tracker keeps it per path; the rest of `identify` uses the title and is cheap.
+#[derive(Clone, Debug)]
+struct ByPath {
+    /// Lowercase file name.
+    file: String,
+    /// tape itself or a game in `KNOWN`, whatever the title.
+    fixed: Option<Seen>,
+    /// From a store's install folder.
+    named: Option<String>,
+}
+
+fn by_path(exe: &str) -> ByPath {
+    let parts: Vec<&str> = exe.split(['\\', '/']).filter(|p| !p.is_empty()).collect();
     let file = parts.last().map(|p| p.to_lowercase()).unwrap_or_default();
-    if file == "tape.exe" || file == "tape" {
-        return Seen::Tape;
-    }
-    if let Some((_, name)) = KNOWN.iter().find(|(exe, _)| *exe == file) {
-        return Seen::Game((*name).to_string());
+    let fixed = if file == "tape.exe" || file == "tape" {
+        Some(Seen::Tape)
+    } else {
+        KNOWN.iter().find(|(known, _)| *known == file).map(|(_, name)| Seen::Game((*name).to_string()))
+    };
+    let named = if fixed.is_some() {
+        None
+    } else {
+        steam_game(exe, &parts).or_else(|| library_game(&parts)).map(|n| naming::clean(&n)).filter(|n| !n.is_empty())
+    };
+    ByPath { file, fixed, named }
+}
+
+pub fn identify(app: &Foreground) -> Seen {
+    identify_with(app, &by_path(&app.exe))
+}
+
+fn identify_with(app: &Foreground, path: &ByPath) -> Seen {
+    let file = &path.file;
+    if let Some(seen) = &path.fixed {
+        return seen.clone();
     }
     // Java runs Minecraft, and the title carries a version and the world type.
     if file == "javaw.exe" && app.title.starts_with("Minecraft") {
         return Seen::Game("Minecraft".to_string());
     }
-    let named = steam_game(&app.exe, &parts).or_else(|| library_game(&parts)).map(|n| naming::clean(&n)).filter(|n| !n.is_empty());
-    if let Some(name) = named {
-        return Seen::Game(name);
+    if let Some(name) = &path.named {
+        return Seen::Game(name.clone());
     }
     if app.fullscreen && !NOT_FULLSCREEN_GAMES.contains(&file.as_str()) {
         let name = from_title(&app.title);
@@ -120,18 +148,28 @@ pub fn identify(app: &Foreground) -> Seen {
 /// tape's own overlay, should still file the clip under the game that's in it.
 #[derive(Default)]
 pub struct Tracker {
-    window: Option<Foreground>,
     seen: Option<Seen>,
     last: Option<(String, Instant)>,
+    /// What each executable's path says, kept because a Steam game's takes reading every
+    /// manifest, and its title (a map, a score) can change on every poll.
+    paths: HashMap<String, ByPath>,
 }
+
+/// More executables than anyone switches between in a session; past it the cache starts over.
+const PATHS_KEPT: usize = 64;
 
 impl Tracker {
     pub fn update(&mut self, window: Option<Foreground>, now: Instant) {
-        // Only on a change: identifying a Steam game reads its manifests.
-        if window != self.window || self.seen.is_none() {
-            self.seen = Some(window.as_ref().map_or(Seen::Other, identify));
-            self.window = window;
-        }
+        self.seen = Some(match &window {
+            None => Seen::Other,
+            Some(app) => {
+                if self.paths.len() >= PATHS_KEPT && !self.paths.contains_key(&app.exe) {
+                    self.paths.clear();
+                }
+                let path = self.paths.entry(app.exe.clone()).or_insert_with(|| by_path(&app.exe));
+                identify_with(app, path)
+            }
+        });
         match self.seen.as_ref() {
             Some(Seen::Game(name)) => self.last = Some((name.clone(), now)),
             Some(Seen::Tape) => {
@@ -312,6 +350,43 @@ mod tests {
         tracker.update(window(r"C:\x\cs2.exe"), start);
         tracker.update(window(r"C:\x\tape.exe"), later(100));
         assert_eq!(tracker.game(Duration::from_secs(5), later(101)), "Counter-Strike 2");
+    }
+
+    #[test]
+    fn a_steam_game_with_a_changing_title_reads_its_manifests_once() {
+        let root = std::env::temp_dir().join(format!("tape-steam-cache-{}", std::process::id()));
+        let apps = root.join("steamapps");
+        let dir = apps.join("common").join("dota 2 beta");
+        fs::create_dir_all(&dir).unwrap();
+        let manifest = apps.join("appmanifest_570.acf");
+        fs::write(&manifest, "\t\"name\"\t\t\"Dota 2\"\n\t\"installdir\"\t\t\"dota 2 beta\"\n").unwrap();
+        let exe = dir.join("dota2.exe").display().to_string();
+        let at = |title: &str| Some(Foreground { title: title.into(), exe: exe.clone(), fullscreen: true });
+        let now = Instant::now();
+        let mut tracker = Tracker::default();
+        tracker.update(at("Dota 2 - 0:01"), now);
+        // With the manifest gone, a fresh look would fall back to the folder name.
+        fs::remove_file(&manifest).unwrap();
+        tracker.update(at("Dota 2 - 0:02"), now);
+        tracker.update(window(r"C:\x\notepad.exe"), now);
+        tracker.update(at("Dota 2 - 0:03"), now);
+        assert_eq!(tracker.game(Duration::from_secs(1), now), "Dota 2");
+        assert_eq!(identify(&at("x").unwrap()), game("dota 2 beta"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_title_still_counts_for_java_and_fullscreen_windows() {
+        let now = Instant::now();
+        let mut tracker = Tracker::default();
+        let java = |title: &str| Some(Foreground { title: title.into(), exe: r"C:\Java\javaw.exe".into(), fullscreen: false });
+        tracker.update(java("Some IDE"), now);
+        assert_eq!(tracker.game(Duration::from_secs(1), now), DESKTOP);
+        tracker.update(java("Minecraft 1.21"), now);
+        assert_eq!(tracker.game(Duration::from_secs(1), now), "Minecraft");
+        let indie = |title: &str| Some(Foreground { title: title.into(), exe: r"C:\Indie\game.exe".into(), fullscreen: true });
+        tracker.update(indie("Hades II - v1.0"), now);
+        assert_eq!(tracker.game(Duration::from_secs(1), now), "Hades II");
     }
 
     #[test]

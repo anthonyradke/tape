@@ -24,12 +24,41 @@ fn ffmpeg(args: &[&str]) {
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
 }
 
+/// This run's folder under Cargo's scratch folder for integration tests (on disk, unlike a
+/// RAM-backed /tmp): the fixtures, plus one `out-<test>` folder per engine. It stays after the
+/// run for inspection; a run more than an hour later deletes it.
+fn run_dir() -> &'static Path {
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let root = Path::new(env!("CARGO_TARGET_TMPDIR"));
+        remove_old_runs(root);
+        let dir = root.join(format!("tape-e2e-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    })
+}
+
+/// Deletes folders left by runs that last wrote over an hour ago.
+fn remove_old_runs(root: &Path) {
+    let Ok(entries) = fs::read_dir(root) else { return };
+    for entry in entries.flatten() {
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > Duration::from_secs(3600));
+        if stale && entry.file_name().to_string_lossy().starts_with("tape-e2e-") {
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
 /// Streams shared by every test, built once.
 fn fixtures() -> &'static (PathBuf, PathBuf) {
     static FIXTURES: OnceLock<(PathBuf, PathBuf)> = OnceLock::new();
     FIXTURES.get_or_init(|| {
-        let dir = std::env::temp_dir().join(format!("tape-e2e-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
+        let dir = run_dir();
         let (h264, aac) = (dir.join("v.h264"), dir.join("a.aac"));
         ffmpeg(&["-f", "lavfi", "-i", "testsrc2=size=640x360:rate=60", "-frames:v", "600", "-pix_fmt", "yuv420p", "-g", "60", "-keyint_min", "60", "-sc_threshold", "0", "-bf", "0", "-c:v", "libx264", "-preset", "ultrafast", "-bsf:v", "h264_metadata=aud=insert", "-f", "h264", h264.to_str().unwrap()]);
         ffmpeg(&["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "4", "-ac", "2", "-c:a", "aac", "-f", "adts", aac.to_str().unwrap()]);
@@ -77,7 +106,7 @@ struct Engine {
 impl Engine {
     fn start(name: &str, env: &[(&str, &str)]) -> Engine {
         let (video, audio) = fixtures();
-        let folder = std::env::temp_dir().join(format!("tape-e2e-out-{}-{name}", std::process::id()));
+        let folder = run_dir().join(format!("out-{name}"));
         let _ = fs::remove_dir_all(&folder);
         fs::create_dir_all(&folder).unwrap();
         let mut child = Command::new(env!("CARGO_BIN_EXE_tape-engine-fake"))
@@ -430,7 +459,7 @@ fn a_games_settings_apply_without_emptying_the_buffer() {
     if !have_ffmpeg() {
         return;
     }
-    let log = std::env::temp_dir().join(format!("tape-e2e-pergame-{}.log", std::process::id()));
+    let log = run_dir().join("pergame.log");
     let _ = fs::remove_file(&log);
     let mut e = Engine::start("pergame", &[("TAPE_LOG", log.to_str().unwrap())]);
     e.configure(json!({"replaySeconds": 30, "bitrateMbps": 50}));

@@ -5,7 +5,8 @@ use std::fs::{self, File};
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use serde_json::Value;
 use tape_core::mp4::codec::{nal_units, parse_frame};
@@ -21,10 +22,34 @@ fn have_ffmpeg() -> bool {
     Command::new("ffmpeg").arg("-version").output().is_ok()
 }
 
+/// This run's folder under Cargo's scratch folder for integration tests (on disk, unlike a
+/// RAM-backed /tmp). It stays after the run for inspection; the next run deletes it.
 fn tmp(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("tape-test-{}", std::process::id()));
-    fs::create_dir_all(&dir).unwrap();
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    let dir = DIR.get_or_init(|| {
+        let root = Path::new(env!("CARGO_TARGET_TMPDIR"));
+        remove_old_runs(root);
+        let dir = root.join(format!("tape-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    });
     dir.join(name)
+}
+
+/// Deletes folders left by runs that last wrote over an hour ago.
+fn remove_old_runs(root: &Path) {
+    let Ok(entries) = fs::read_dir(root) else { return };
+    for entry in entries.flatten() {
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > Duration::from_secs(3600));
+        if stale && entry.file_name().to_string_lossy().starts_with("tape-test-") {
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    }
 }
 
 /// A name no other test running at the same time will use.

@@ -169,9 +169,24 @@ pub fn run(settings: &Settings, ctx: &VideoContext) -> Result<(), String> {
         let began = ctx.clock.now_us();
         if changed || !has_image {
             if let Some((source, turn)) = capture.as_mut().and_then(|c| c.frame().map(|f| (f, c.turn()))) {
-                converter.convert(&source, turn)?;
-                has_image = true;
-                changed = false;
+                match converter.convert(&source, turn) {
+                    Ok(()) => {
+                        has_image = true;
+                        changed = false;
+                    }
+                    Err(e) => {
+                        if let Err(removed) = unsafe { gfx.device.GetDeviceRemovedReason() } {
+                            return Err(format!("the GPU was reset: {removed}"));
+                        }
+                        // An image the video processor won't take, as Desktop Duplication can hand
+                        // over mid mode switch. Like a capture failure, the last image carries on
+                        // while capture opens again, instead of the whole pipeline restarting.
+                        log!("video: {e}");
+                        ctx.stats.transient.store(false, Ordering::Relaxed);
+                        *ctx.stats.problem.lock().unwrap() = Some(e);
+                        capture = None;
+                    }
+                }
             }
         }
         // The output texture holds garbage until the first conversion, so nothing is encoded

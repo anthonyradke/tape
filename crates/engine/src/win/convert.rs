@@ -82,8 +82,11 @@ impl Converter {
         if self.processor.is_some() && self.source_size == src && self.turn == turn {
             return Ok(());
         }
-        self.source_size = src;
-        self.turn = turn;
+        // Nothing of the old setup survives a failure below, so the next image tries again
+        // rather than being drawn with a processor made for another size.
+        self.processor = None;
+        self.enumerator = None;
+        self.output = None;
         self.inputs.clear();
         let content = D3D11_VIDEO_PROCESSOR_CONTENT_DESC {
             InputFrameFormat: D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
@@ -143,6 +146,8 @@ impl Converter {
             self.enumerator = Some(enumerator);
             self.processor = Some(processor);
         }
+        self.source_size = src;
+        self.turn = turn;
         Ok(())
     }
 
@@ -169,8 +174,9 @@ impl Converter {
     pub fn convert(&mut self, source: &ID3D11Texture2D, turn: Turn) -> Result<(), String> {
         let mut desc = D3D11_TEXTURE2D_DESC::default();
         unsafe { source.GetDesc(&mut desc) };
-        self.prepare((desc.Width, desc.Height), turn)?;
-        let view = self.input(source)?;
+        let what = || format!("{}x{} format {}", desc.Width, desc.Height, desc.Format.0);
+        self.prepare((desc.Width, desc.Height), turn).map_err(|e| format!("video processor setup for {}: {e}", what()))?;
+        let view = self.input(source).map_err(|e| format!("video processor input {}: {e}", what()))?;
         let stream = D3D11_VIDEO_PROCESSOR_STREAM {
             Enable: true.into(),
             pInputSurface: ManuallyDrop::new(Some(view)),

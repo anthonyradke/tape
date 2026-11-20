@@ -351,7 +351,7 @@ impl Engine {
                 Some(clip) => match write_file(&path, &clip) {
                     Ok(bytes) => {
                         log!("saved clip {} ({bytes} bytes)", path.display());
-                        Event::Saved { kind: SavedKind::Clip, path: path.display().to_string(), bytes, request }
+                        Event::Saved { kind: SavedKind::Clip, path: path.display().to_string(), bytes, request, part: false }
                     }
                     Err(e) => {
                         log!("clip failed: {e}");
@@ -391,7 +391,7 @@ impl Engine {
         }
         if finished.bytes > 0 {
             let path = finished.path.display().to_string();
-            let _ = self.events.send(Event::Saved { kind: SavedKind::Recording, path, bytes: finished.bytes, request: 0 });
+            let _ = self.events.send(Event::Saved { kind: SavedKind::Recording, path, bytes: finished.bytes, request: 0, part: !stopped });
         }
     }
 

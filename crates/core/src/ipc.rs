@@ -189,6 +189,9 @@ pub enum Event {
         /// The `SaveClip` request this answers, 0 for none.
         #[serde(default)]
         request: u64,
+        /// A recording's earlier part, split off by a parameter change while recording goes on.
+        #[serde(default)]
+        part: bool,
     },
     /// The answer to `AddMarker`: how far into the recording's file it went, or None when no
     /// recording is being written.

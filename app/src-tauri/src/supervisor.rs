@@ -367,8 +367,9 @@ fn handle(app: &AppHandle, event: Event, alarm: &mut Alarm) {
             *shared.probe.lock().unwrap() = *probe;
             let _ = app.emit("changed", ());
         }
-        Event::Saved { kind, path, request, .. } => {
-            if sounds {
+        Event::Saved { kind, path, request, part, .. } => {
+            // A part split off by a parameter change: the recording itself goes on.
+            if sounds && !part {
                 cue::play(if kind == SavedKind::Clip { Cue::ClipSaved } else { Cue::RecordingStopped });
             }
             // The gallery reloads on this, and the status that says it's finished is up to half a

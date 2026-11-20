@@ -7,3 +7,4 @@
 - Saving a trim twice at once, as with a double click, makes two copies instead of one broken file.
 - Stopping a long recording on a slow drive no longer gets the engine restarted as unresponsive, which lost the replay buffer and could leave the file unfinished.
 - The gallery waits until a stopped recording is fully saved before showing it, so repairing, renaming or deleting it can't happen mid-save.
+- When a recording splits into a new file (a monitor or GPU change), the "recording stopped" sound no longer plays while it carries on.

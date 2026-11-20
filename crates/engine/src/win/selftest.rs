@@ -263,6 +263,10 @@ fn check_audio(out: &mut String, label: &str, source: Source) {
             while Instant::now() < until {
                 let mut got: Vec<AudioBlock> = Vec::new();
                 if let Err(e) = input.read(&mut got) {
+                    // The tone plays from `tone`, which is about to be freed.
+                    unsafe {
+                        let _ = PlaySoundW(PCWSTR::null(), None, SND_PURGE);
+                    }
                     line!(out, "  {label}: FAILED reading, {e}");
                     return;
                 }

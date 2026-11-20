@@ -44,6 +44,9 @@ struct Inner {
     /// Files ended by a parameter change, finishing on threads of their own.
     finishing: Vec<(PathBuf, JoinHandle<Finished>)>,
     finished: Vec<Finished>,
+    /// Recordings stopped by `end_recording`, likewise.
+    ending: Vec<(PathBuf, JoinHandle<Finished>)>,
+    ended: Vec<Finished>,
     failure: Option<String>,
 }
 
@@ -70,6 +73,8 @@ impl Sink {
                 newest_video_us: 0,
                 finishing: Vec::new(),
                 finished: Vec::new(),
+                ending: Vec::new(),
+                ended: Vec::new(),
                 failure: None,
             }),
             want_keyframe: AtomicBool::new(false),
@@ -190,18 +195,51 @@ impl Sink {
         }
     }
 
-    /// Also waits for files a parameter change ended, so none is left unfinished when the engine
-    /// stops; those are reported by `take_finished`.
+    /// Stops the recording and waits for it to be finished. Also waits for files a parameter
+    /// change or `end_recording` ended, so none is left unfinished when the engine stops; those are
+    /// reported by `take_finished` and `take_ended`.
     pub fn stop_recording(&self) -> Option<Finished> {
-        let (active, finishing) = {
+        let (active, finishing, ending) = {
             let mut s = self.inner.lock().unwrap();
             s.pending = None;
-            (s.active.take(), std::mem::take(&mut s.finishing))
+            (s.active.take(), std::mem::take(&mut s.finishing), std::mem::take(&mut s.ending))
         };
         // Outside the lock: finishing a long recording takes a moment, and capture runs throughout.
         let done: Vec<Finished> = finishing.into_iter().map(joined).collect();
-        self.inner.lock().unwrap().finished.extend(done);
+        let ended: Vec<Finished> = ending.into_iter().map(joined).collect();
+        {
+            let mut s = self.inner.lock().unwrap();
+            s.finished.extend(done);
+            s.ended.extend(ended);
+        }
         active.map(|a| a.recorder.finish())
+    }
+
+    /// Stops the recording without waiting: the queue drains and the index is written on a thread
+    /// of its own, which on a slow disk can take far longer than the engine may go without
+    /// reporting. `take_ended` hands it over once it's done. False if nothing was recording.
+    pub fn end_recording(&self) -> bool {
+        let mut s = self.inner.lock().unwrap();
+        s.pending = None;
+        let Some(active) = s.active.take() else { return false };
+        match finish_in_background(active.recorder) {
+            Ok(handle) => s.ending.push(handle),
+            Err(finished) => s.ended.push(finished),
+        }
+        true
+    }
+
+    /// Recordings `end_recording` stopped that are finished now.
+    pub fn take_ended(&self) -> Vec<Finished> {
+        let mut s = self.inner.lock().unwrap();
+        let s = &mut *s;
+        take_done(&mut s.ending, &mut s.ended)
+    }
+
+    /// Files still being finished, split or stopped. Nothing else may touch them yet.
+    pub fn finishing_paths(&self) -> Vec<PathBuf> {
+        let s = self.inner.lock().unwrap();
+        s.finishing.iter().chain(&s.ending).map(|(path, _)| path.clone()).collect()
     }
 
     /// A marker at the newest frame of the recording, which the file gets as a chapter. Returns
@@ -233,14 +271,9 @@ impl Sink {
     /// Files finished by a parameter change since the last call. One still finishing comes in a
     /// later call.
     pub fn take_finished(&self) -> Vec<Finished> {
-        let (mut out, done) = {
-            let mut s = self.inner.lock().unwrap();
-            let (done, running) = std::mem::take(&mut s.finishing).into_iter().partition(|(_, h)| h.is_finished());
-            s.finishing = running;
-            (std::mem::take(&mut s.finished), done)
-        };
-        out.extend(done.into_iter().map(joined));
-        out
+        let mut s = self.inner.lock().unwrap();
+        let s = &mut *s;
+        take_done(&mut s.finishing, &mut s.finished)
     }
 
     /// A problem with the current recording, if any.
@@ -323,6 +356,15 @@ fn finish_in_background(recorder: Recorder) -> Result<(PathBuf, JoinHandle<Finis
             None => Err(Finished { path, bytes: 0, error: Some(format!("couldn't finish the recording: {e}")) }),
         },
     }
+}
+
+/// What `finished` holds plus the threads in `running` that are done. Joining those is immediate.
+fn take_done(running: &mut Vec<(PathBuf, JoinHandle<Finished>)>, finished: &mut Vec<Finished>) -> Vec<Finished> {
+    let (done, still): (Vec<_>, Vec<_>) = std::mem::take(running).into_iter().partition(|(_, h)| h.is_finished());
+    *running = still;
+    let mut out = std::mem::take(finished);
+    out.extend(done.into_iter().map(joined));
+    out
 }
 
 fn joined((path, handle): (PathBuf, JoinHandle<Finished>)) -> Finished {
@@ -575,6 +617,51 @@ mod tests {
         let done = sink.take_finished();
         assert_eq!(done.len(), 1, "stop_recording must have joined the split file");
         assert!(std::fs::metadata(&done[0].path).unwrap().len() >= done[0].bytes);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn wait_ended(sink: &Sink) -> Vec<Finished> {
+        for _ in 0..500 {
+            let done = sink.take_ended();
+            if !done.is_empty() {
+                return done;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("the stopped recording never finished");
+    }
+
+    #[test]
+    fn ending_a_recording_finishes_it_in_the_background() {
+        let dir = std::env::temp_dir().join(format!("tape-sink-end-{}", std::process::id()));
+        let sink = Sink::new(false, 10);
+        assert!(!sink.end_recording(), "nothing was recording");
+        sink.start_recording(dir.join("game.mp4"));
+        for pts in 0..20 {
+            sink.video(&format(1), pts, pts % 10 == 0, vec![0; 100]);
+        }
+        assert!(sink.end_recording());
+        assert!(!sink.is_recording());
+        let done = wait_ended(&sink);
+        assert_eq!(done.len(), 1);
+        assert_eq!(done[0].path, dir.join("game.mp4"));
+        assert!(done[0].error.is_none() && done[0].bytes > 0, "{:?}", done[0]);
+        assert!(!crate::mp4::repair::unfinished(&done[0].path));
+        assert!(sink.finishing_paths().is_empty());
+        assert!(sink.take_finished().is_empty(), "a stopped recording isn't a split part");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stopping_waits_for_an_ended_recording_too() {
+        let dir = std::env::temp_dir().join(format!("tape-sink-end-stop-{}", std::process::id()));
+        let sink = Sink::new(false, 10);
+        sink.start_recording(dir.join("game.mp4"));
+        sink.video(&format(1), 0, true, vec![0; 100]);
+        sink.end_recording();
+        assert!(sink.stop_recording().is_none());
+        let done = sink.take_ended();
+        assert_eq!(done.len(), 1, "stop_recording must have joined the ended recording");
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -378,6 +378,7 @@ fn handle(app: &AppHandle, event: Event, alarm: &mut Alarm) {
                 if status.recording_path.as_ref() == Some(&path) {
                     status.recording_path = None;
                 }
+                status.finishing.retain(|p| *p != path);
             }
             let _ = app.emit("saved", &path);
             let _ = app.emit("changed", ());

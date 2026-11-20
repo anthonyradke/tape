@@ -152,8 +152,12 @@ pub(crate) fn all_clips(app: &AppHandle) -> Vec<ClipFile> {
             add_clips(&entry.path(), &entry.file_name().to_string_lossy(), &known, &mut clips);
         }
     }
-    let writing = shared.status.lock().unwrap().recording_path.clone();
-    clips.retain(|c| Some(&c.path) != writing.as_ref());
+    let (writing, finishing) = {
+        let status = shared.status.lock().unwrap();
+        (status.recording_path.clone(), status.finishing.clone())
+    };
+    // Shown once the engine says they're finished (the gallery reloads on Saved).
+    clips.retain(|c| Some(&c.path) != writing.as_ref() && !finishing.contains(&c.path));
     for c in &mut clips {
         c.starred = stars.has(&c.path);
         // Only recordings are ever written in fragments; clips go to disk in one piece.

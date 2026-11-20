@@ -116,6 +116,8 @@ pub struct Status {
     pub recording_seconds: f32,
     pub recording_bytes: u64,
     pub recording_path: Option<String>,
+    /// Recordings that have stopped (or split) and are still being finished on disk.
+    pub finishing: Vec<String>,
     /// Times the video pipeline has been restarted since the engine started.
     pub restarts: u32,
     /// Where a clip saved now would go.

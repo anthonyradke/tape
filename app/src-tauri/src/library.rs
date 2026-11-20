@@ -46,10 +46,17 @@ impl Stars {
 
 /// A finished video in the clips folder, not the recording still being written.
 fn check(app: &AppHandle, path: &str) -> Result<PathBuf, String> {
-    let writing = app.state::<Shared>().status.lock().unwrap().recording_path.clone();
+    let (writing, finishing) = {
+        let shared = app.state::<Shared>();
+        let status = shared.status.lock().unwrap();
+        (status.recording_path.clone(), status.finishing.clone())
+    };
     let file = clip_file(app, path).ok_or("That file isn't in the clips folder any more.")?;
     if writing.as_deref() == Some(path) {
         return Err("That recording is still going.".into());
+    }
+    if finishing.iter().any(|p| p == path) {
+        return Err("That recording is still being saved. Try again in a moment.".into());
     }
     Ok(file)
 }

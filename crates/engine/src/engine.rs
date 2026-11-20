@@ -372,10 +372,10 @@ impl Engine {
         }
     }
 
+    /// The file is finished on a thread of its own and reported by `poll`: on a slow disk that
+    /// takes longer than the host waits for a status before it calls the engine hung.
     fn stop_recording(&mut self) {
-        if let Some(finished) = self.sink.stop_recording() {
-            self.report(finished, true);
-        }
+        self.sink.end_recording();
         if std::mem::take(&mut self.deferred) {
             self.configure(self.requested.clone());
         }
@@ -402,6 +402,9 @@ impl Engine {
     fn poll(&mut self) {
         for finished in self.sink.take_finished() {
             self.report(finished, false);
+        }
+        for finished in self.sink.take_ended() {
+            self.report(finished, true);
         }
         if let Some(message) = self.sink.take_failure() {
             log!("recording problem: {message}");
@@ -464,6 +467,7 @@ impl Engine {
             recording_seconds: rec.micros as f32 / 1e6,
             recording_bytes: rec.bytes,
             recording_path: rec.path.map(|p| p.display().to_string()),
+            finishing: self.sink.finishing_paths().iter().map(|p| p.display().to_string()).collect(),
             restarts: self.restarts.load(Ordering::Relaxed),
             game: self.games.game(RECENT_GAME, Instant::now()),
             quality,
@@ -625,6 +629,13 @@ pub fn run(backend: Arc<dyn Backend>, input: impl BufRead + Send + 'static, mut 
 
     log!("engine stopping");
     if let Some(finished) = engine.sink.stop_recording() {
+        engine.report(finished, true);
+    }
+    // What stop_recording waited for: split parts and recordings stopped just before.
+    for finished in engine.sink.take_finished() {
+        engine.report(finished, false);
+    }
+    for finished in engine.sink.take_ended() {
         engine.report(finished, true);
     }
     // Pipeline threads aren't joined here: if one is what's stuck, joining would hang the exit.

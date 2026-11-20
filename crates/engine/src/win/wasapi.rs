@@ -2,6 +2,7 @@
 //! own sounds out, or a microphone.
 
 use std::cell::Cell;
+use std::mem::ManuallyDrop;
 use std::sync::mpsc::{channel, Sender};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -182,7 +183,9 @@ fn process_loopback(pid: u32, mode: PROCESS_LOOPBACK_MODE) -> Result<IAudioClien
         },
     });
     // A VT_BLOB pointing at the parameters, which only have to live until activation is done.
-    let mut blob = PROPVARIANT::default();
+    // Never dropped: PROPVARIANT's Drop is PropVariantClear, which would hand the box's memory to
+    // CoTaskMemFree and free it a second time when the box goes, corrupting the heap.
+    let mut blob = ManuallyDrop::new(PROPVARIANT::default());
     unsafe {
         let inner = &mut *blob.Anonymous.Anonymous;
         inner.vt = VT_BLOB;
@@ -191,7 +194,7 @@ fn process_loopback(pid: u32, mode: PROCESS_LOOPBACK_MODE) -> Result<IAudioClien
     let (done, finished) = channel();
     let handler: IActivateAudioInterfaceCompletionHandler = Activated { done: Mutex::new(Some(done)) }.into();
     let operation = unsafe {
-        ActivateAudioInterfaceAsync(VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, &IAudioClient::IID, Some(&blob), &handler)
+        ActivateAudioInterfaceAsync(VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, &IAudioClient::IID, Some(&*blob), &handler)
     }
     .map_err(text)?;
     if finished.recv_timeout(ACTIVATE_LIMIT).is_err() {
@@ -412,6 +415,22 @@ impl Drop for Input {
         let _ = unsafe { self.client.Stop() };
         if let Some(event) = self.event.take() {
             let _ = unsafe { CloseHandle(event) };
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Activation used to free its parameters twice, which killed the process with
+    /// STATUS_HEAP_CORRUPTION whether or not there was an output to capture.
+    #[test]
+    fn process_loopback_activation_leaves_the_heap_intact() {
+        com_init();
+        for mode in [PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE, PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE] {
+            // Failing is fine on a machine with no audio; crashing isn't.
+            let _ = process_loopback(std::process::id(), mode);
         }
     }
 }

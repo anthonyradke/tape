@@ -65,7 +65,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Unit tests
-        run: cargo test -p tape-core --lib
+        run: cargo test -p tape-core -p tape-engine --lib
 
       - name: Build
         run: cargo build --release -p tape

@@ -5,7 +5,7 @@
 
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command as Process, Stdio};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{channel, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
@@ -34,6 +34,31 @@ const CRASH_WINDOW: Duration = Duration::from_secs(120);
 const EMPTY_RECORDING_BYTES: u64 = 16 * 1024;
 /// Long enough for the supervisor to notice, plus the wait in `finish`.
 const ENGINE_STOP_LIMIT: Duration = Duration::from_secs(6);
+
+/// Clip saves the engine was asked for and hasn't answered (Saved or a clip Error) yet.
+static SAVES_OUT: AtomicU32 = AtomicU32::new(0);
+
+/// Asks the engine for a clip. With no engine to ask (it's restarting) or one that dies before
+/// answering, the save fails out loud like any other, rather than a key press doing nothing.
+pub fn save_clip(app: &AppHandle, seconds: Option<u32>, request: u64) {
+    SAVES_OUT.fetch_add(1, Ordering::Relaxed);
+    if !state::send(app, &Command::SaveClip { seconds, request }) {
+        save_answered();
+        clip_failed(app, "The engine is restarting, so the clip wasn't saved. Try again in a moment.".into(), request);
+    }
+}
+
+fn save_answered() {
+    let _ = SAVES_OUT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1));
+}
+
+fn clip_failed(app: &AppHandle, message: String, request: u64) {
+    crate::share::save_failed(request);
+    if app.state::<Shared>().settings.lock().unwrap().sounds {
+        cue::play(Cue::Failed);
+    }
+    let _ = app.emit("error", message);
+}
 
 /// Decides when a failure deserves a sound. It outlives any one engine, because a crash loop is
 /// the case it most needs to catch.
@@ -159,6 +184,10 @@ fn run(app: AppHandle) {
                     return;
                 }
                 *shared.engine_stdin.lock().unwrap() = None;
+                if SAVES_OUT.swap(0, Ordering::Relaxed) > 0 {
+                    crate::share::saves_lost();
+                    clip_failed(&app, "The engine stopped before the clip was saved.".into(), 0);
+                }
                 let mut health = shared.health.lock().unwrap();
                 health.engine_restarts += 1;
                 health.last_restart = Some(reason);
@@ -344,6 +373,7 @@ fn handle(app: &AppHandle, event: Event, alarm: &mut Alarm) {
             let _ = app.emit("saved", &path);
             let _ = app.emit("changed", ());
             if kind == SavedKind::Clip {
+                save_answered();
                 crate::share::clip_saved(app, request, path);
             }
         }
@@ -355,8 +385,11 @@ fn handle(app: &AppHandle, event: Event, alarm: &mut Alarm) {
         }
         Event::Error { message, clip, stopped, request } => {
             crate::share::save_failed(request);
-            if clip && sounds {
-                cue::play(Cue::Failed);
+            if clip {
+                save_answered();
+                if sounds {
+                    cue::play(Cue::Failed);
+                }
             }
             if stopped {
                 // The engine stopped the recording itself.

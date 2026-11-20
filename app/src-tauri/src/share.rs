@@ -22,7 +22,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::commands;
 use crate::cue::{self, Cue};
-use crate::state::{self, Shared};
+use crate::state::Shared;
 use crate::supervisor;
 
 /// Waits before each retry of a part. Only failures that may pass are retried: no answer, or the
@@ -546,7 +546,7 @@ const AFTER_CHIME: Duration = Duration::from_millis(600);
 pub fn save_and_share(app: &AppHandle) {
     let request = NEXT_REQUEST.fetch_add(1, Ordering::Relaxed);
     WAITING.lock().unwrap().push((request, set_up(app)));
-    state::send(app, &tape_core::ipc::Command::SaveClip { seconds: None, request });
+    crate::supervisor::save_clip(app, None, request);
 }
 
 #[tauri::command]
@@ -563,6 +563,11 @@ fn take_waiting(request: u64) -> Option<bool> {
 /// The save from `save_and_share` failed, which the engine's error already says.
 pub fn save_failed(request: u64) {
     take_waiting(request);
+}
+
+/// The engine went away with saves unanswered, so none of them will be shared.
+pub fn saves_lost() {
+    WAITING.lock().unwrap().clear();
 }
 
 fn play_after_chime(app: &AppHandle, cue: Cue) {

@@ -146,16 +146,18 @@ pub fn for_engine(settings: &Settings) -> Command {
     Command::Configure { settings: Box::new(settings) }
 }
 
-/// Sends a command to the engine. While it's restarting there is nobody to tell, and the
-/// supervisor brings a new engine up to date with the current settings anyway.
-pub fn send(app: &AppHandle, command: &Command) {
-    let Some(shared) = app.try_state::<Shared>() else { return };
+/// Sends a command to the engine, and says whether it got there. While it's restarting there is
+/// nobody to tell, and the supervisor brings a new engine up to date with the current settings
+/// anyway, but a save has to say it didn't happen (`supervisor::save_clip`).
+pub fn send(app: &AppHandle, command: &Command) -> bool {
+    let Some(shared) = app.try_state::<Shared>() else { return false };
     let mut stdin = shared.engine_stdin.lock().unwrap();
-    if let Some(pipe) = stdin.as_mut() {
-        let Ok(mut line) = serde_json::to_vec(command) else { return };
-        line.push(b'\n');
-        if pipe.write_all(&line).and_then(|_| pipe.flush()).is_err() {
-            *stdin = None;
-        }
+    let Some(pipe) = stdin.as_mut() else { return false };
+    let Ok(mut line) = serde_json::to_vec(command) else { return false };
+    line.push(b'\n');
+    if pipe.write_all(&line).and_then(|_| pipe.flush()).is_err() {
+        *stdin = None;
+        return false;
     }
+    true
 }

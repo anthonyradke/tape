@@ -124,9 +124,12 @@ pub fn run(settings: &Settings, ctx: &VideoContext) -> Result<(), String> {
                         attempts = 0;
                     }
                     Err(e) => {
-                        attempts += 1;
                         log!("capture: {}", e.message());
                         let refused = matches!(e, CaptureError::Refused(_));
+                        // Only refusals in a row count: the lock screen or a monitor that's off
+                        // says nothing about the method, and must not make one refusal on the
+                        // way back look like several.
+                        attempts = if refused { attempts + 1 } else { 0 };
                         // Set before the problem, so a status report never pairs it with the old flag.
                         ctx.stats.transient.store(!refused, Ordering::Relaxed);
                         *ctx.stats.problem.lock().unwrap() = Some(e.message().to_string());

@@ -59,16 +59,17 @@ impl Shared {
         let dir = app.path().app_config_dir().unwrap_or_else(|_| PathBuf::from("."));
         let _ = fs::create_dir_all(&dir);
         let settings_path = dir.join("settings.json");
-        let read = fs::read(&settings_path);
+        // Antivirus or a sync tool can hold the file for a moment at sign-in.
+        let read = read_retrying(|| fs::read(&settings_path), 5, std::time::Duration::from_millis(200));
         let first_run = matches!(&read, Err(e) if e.kind() == std::io::ErrorKind::NotFound);
         let (settings, damaged) = match read.map(String::from_utf8) {
             Ok(Ok(text)) => Settings::from_json_lenient(&text),
             Ok(Err(_)) => (Settings::default(), true),
             Err(_) => (Settings::default(), !first_run),
         };
-        if damaged {
-            let _ = fs::copy(&settings_path, settings_path.with_extension("json.bad"));
-        }
+        // Only write over a file that couldn't be read once a copy of it is safe. Otherwise it's
+        // left alone until the user changes a setting.
+        let keep_file = damaged && fs::copy(&settings_path, settings_path.with_extension("json.bad")).is_err();
         #[cfg(windows)]
         if let Some(videos) = known_videos_folder() {
             tape_core::naming::set_videos_folder(videos);
@@ -97,7 +98,9 @@ impl Shared {
             settings_path,
             thumbnails,
         };
-        shared.persist();
+        if !keep_file {
+            shared.persist();
+        }
         (shared, first_run)
     }
 
@@ -160,4 +163,69 @@ pub fn send(app: &AppHandle, command: &Command) -> bool {
         return false;
     }
     true
+}
+
+/// `read`, tried again after `wait` while it fails with anything but "not found".
+fn read_retrying(mut read: impl FnMut() -> std::io::Result<Vec<u8>>, tries: u32, wait: std::time::Duration) -> std::io::Result<Vec<u8>> {
+    let mut result = read();
+    for _ in 1..tries {
+        match &result {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => std::thread::sleep(wait),
+            _ => break,
+        }
+        result = read();
+    }
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Error, ErrorKind};
+    use std::time::Duration;
+
+    #[test]
+    fn a_locked_file_is_read_again() {
+        let mut calls = 0;
+        let read = read_retrying(
+            || {
+                calls += 1;
+                if calls < 3 { Err(Error::from(ErrorKind::PermissionDenied)) } else { Ok(b"{}".to_vec()) }
+            },
+            5,
+            Duration::ZERO,
+        );
+        assert_eq!(read.unwrap(), b"{}");
+        assert_eq!(calls, 3);
+    }
+
+    #[test]
+    fn a_missing_file_is_not_waited_for() {
+        let mut calls = 0;
+        let read = read_retrying(
+            || {
+                calls += 1;
+                Err(Error::from(ErrorKind::NotFound))
+            },
+            5,
+            Duration::ZERO,
+        );
+        assert_eq!(read.unwrap_err().kind(), ErrorKind::NotFound);
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn gives_up_after_the_last_try() {
+        let mut calls = 0;
+        let read = read_retrying(
+            || {
+                calls += 1;
+                Err(Error::from(ErrorKind::PermissionDenied))
+            },
+            5,
+            Duration::ZERO,
+        );
+        assert!(read.is_err());
+        assert_eq!(calls, 5);
+    }
 }

@@ -144,7 +144,13 @@ async function api(request, env, url, parts) {
   }
   if (sub === "complete" && method === "POST" && uploadId) {
     const declared = await declaredBytes(env, id, uploadId);
-    if (declared == null) return json({ error: "No such upload." }, 404);
+    if (declared == null) {
+      // Already completed: the app retries when the answer to its first try was lost, and must
+      // hear that it worked rather than delete the clip as a failed upload.
+      const done = await env.BUCKET.head(video(id));
+      if (done && !expired(done)) return json({ url: `${url.origin}/${id}`, bytes: done.size, expires: Number(done.customMetadata.expires) });
+      return json({ error: "No such upload." }, 404);
+    }
     const { parts: done } = await request.json();
     await env.BUCKET.resumeMultipartUpload(video(id), uploadId).complete(done.map((p) => ({ partNumber: p.part, etag: p.etag })));
     const object = await env.BUCKET.head(video(id)); // complete() doesn't return the metadata

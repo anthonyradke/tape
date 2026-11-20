@@ -400,7 +400,9 @@ fn convert(app: &AppHandle, input: &Path, output: &Path, range: Option<(f64, f64
 async fn upload(app: &AppHandle, server: &Server, path: &str, file: &Path, start: &Value, cancel: &Cancel) -> Result<(), String> {
     let id = start["id"].as_str().unwrap_or_default();
     let upload = start["upload"].as_str().unwrap_or_default();
-    let part_bytes = start["partBytes"].as_u64().unwrap_or(20 << 20) as usize;
+    // R2's smallest part is 5 MiB; past 100 MiB a bad answer could take more memory than it should.
+    // Out of range, the server refuses the part and the share fails instead of tape.
+    let part_bytes = start["partBytes"].as_u64().unwrap_or(20 << 20).clamp(5 << 20, 100 << 20) as usize;
     let total = std::fs::metadata(file).map_err(|e| e.to_string())?.len().max(1);
     let mut reader = std::fs::File::open(file).map_err(|e| e.to_string())?;
     let mut parts = Vec::new();

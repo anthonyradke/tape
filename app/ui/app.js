@@ -206,7 +206,7 @@ function renderAlerts() {
   if (u && u.used / u.free >= 0.8) {
     out.push(`<div class="alert"><b>Cloud storage is ${Math.round((u.used / u.free) * 100)}% full.</b> ${bytes(u.used)} of the free ${bytes(u.free)}. ${u.used >= u.cap ? "New links are refused until some expire or you delete them." : "Delete links you're done with to make room."} <button class="link" data-act="links">Manage links</button></div>`);
   }
-  if (h.engineRestarts > 0) out.push(`<div class="alert">Recovered ${h.engineRestarts === 1 ? "once" : `${h.engineRestarts} times`} since starting. Last: ${esc(h.lastRestart || "unknown")}.</div>`);
+  if (h.engineRestarts > 0) out.push(`<div class="alert">Restarted the engine ${h.engineRestarts === 1 ? "once" : `${h.engineRestarts} times`} since starting. Last: ${esc(h.lastRestart || "unknown")}.</div>`);
   $("alerts").innerHTML = out.join("");
 }
 

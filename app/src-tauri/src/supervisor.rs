@@ -92,10 +92,16 @@ impl Alarm {
         self.crashes.push(Instant::now());
     }
 
-    fn check(&mut self, app: &AppHandle) {
+    /// Engines dying one after another, as opposed to one restart that came back fine.
+    fn looping(&mut self) -> bool {
         self.crashes.retain(|t| t.elapsed() < CRASH_WINDOW);
+        self.crashes.len() >= CRASH_LIMIT
+    }
+
+    fn check(&mut self, app: &AppHandle) {
+        let looping = self.looping();
         let long_down = self.down_since.is_some_and(|since| since.elapsed() >= ALERT_AFTER);
-        if (long_down || self.crashes.len() >= CRASH_LIMIT) && !self.alerted {
+        if (long_down || looping) && !self.alerted {
             self.alerted = true;
             if app.state::<Shared>().settings.lock().unwrap().sounds {
                 cue::play(Cue::Failed);
@@ -328,7 +334,10 @@ fn handle(app: &AppHandle, event: Event, alarm: &mut Alarm) {
                 let before = (health.light, health.problem.clone());
                 if wants_video && !working {
                     health.light = Light::Trouble;
-                    health.problem = Some(status.video.problem.clone().unwrap_or_else(|| "Starting capture".into()));
+                    // Each new engine starts out "starting capture", which in a crash loop is all
+                    // anyone would ever see.
+                    let starting = if alarm.looping() { "The engine keeps crashing" } else { "Starting capture" };
+                    health.problem = Some(status.video.problem.clone().unwrap_or_else(|| starting.into()));
                     if status.video.transient {
                         alarm.paused();
                     } else {

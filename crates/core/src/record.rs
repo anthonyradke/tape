@@ -154,6 +154,11 @@ impl Recorder {
     /// Never blocks. If the disk has fallen 30 s behind, the recording is reported as failed
     /// rather than holding up the replay buffer.
     pub fn push(&self, packet: Packet) {
+        // Once a packet is dropped, later ones would leave a hole: frames referring to pictures
+        // that aren't in the file, and a gap in the sound. The file ends where the queue does.
+        if self.overflowed.load(Ordering::Relaxed) {
+            return;
+        }
         if let Some(tx) = &self.tx {
             // Counted before sending, so the writer can never take it off first.
             self.backlog.queued();
@@ -254,6 +259,25 @@ mod tests {
         let on_disk = std::fs::metadata(&path).unwrap().len();
         assert_eq!(finished.bytes, on_disk);
         assert!(on_disk > 90 * 1000);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn nothing_is_written_after_an_overflow() {
+        let path = scratch("overflowed.mp4");
+        let recorder = Recorder::start(&path, &tracks()).unwrap();
+        let frame = |n: i64| Packet { track: 0, pts: n, key: n == 0, data: Arc::new(vec![7; 1000]) };
+        for n in 0..10 {
+            recorder.push(frame(n));
+        }
+        // As `push` leaves it when the queue was full.
+        recorder.overflowed.store(true, Ordering::Relaxed);
+        for n in 10..90 {
+            recorder.push(frame(n));
+        }
+        let finished = recorder.finish();
+        assert!(finished.error.is_none(), "{:?}", finished.error);
+        assert!(finished.bytes > 10 * 1000 && finished.bytes < 20 * 1000, "{} bytes", finished.bytes);
         let _ = std::fs::remove_file(path);
     }
 }

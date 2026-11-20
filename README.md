@@ -151,6 +151,7 @@ builds the app without one.
 | The shared-link copy: scaling, frame dropping, H.264 and AAC | `tape --share-copy` on a Windows CI runner, decoded by ffmpeg |
 | Playback, seeking and thumbnails in WebView2, the trim, rename and delete commands on real files, overlay window | The real app on the fake engine on a Windows CI runner, driven by `app/ui/uitest.js` |
 | NVENC, video processor, WASAPI | The self-test on a machine with an NVIDIA GPU, from Settings > Run self-test |
+| Known vulnerabilities in dependencies | `cargo audit` in CI against the RustSec advisory database |
 
 `tape --self-test <file> [settings.json]` runs each stage of the pipeline and writes a plain text report, including
 a check that captured frames aren't black and a 4K encode. Settings > Run self-test starts the same command in its

@@ -49,6 +49,21 @@ jobs:
             target/tmp/tape-e2e-*/*.frames
             /tmp/share-fixture/clip.mp4
 
+  audit:
+    # Checks Cargo.lock against the RustSec advisory database. Vulnerabilities fail the run;
+    # unmaintained, unsound and yanked crates are only listed. Exceptions, each with its reason,
+    # go in .cargo/audit.toml.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
+        with:
+          tool: cargo-audit
+      - name: Dependency advisories
+        run: cargo audit
+
   windows:
     runs-on: windows-latest
     needs: test
@@ -69,6 +84,11 @@ jobs:
 
       - name: Build
         run: cargo build --release -p tape
+
+      # The app's own unit tests (updater, share links, paths, cues), in the release profile so they
+      # reuse the build above.
+      - name: App tests
+        run: cargo test --release -p tape
 
       - name: Self-test
         shell: pwsh

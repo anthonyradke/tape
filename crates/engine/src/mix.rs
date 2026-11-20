@@ -11,11 +11,13 @@ use tape_core::ipc::AudioSource;
 use tape_core::packet::{AudioFormat, AAC_FRAME, AUDIO_RATE};
 use tape_core::settings::{Settings, FOLLOW_DEFAULT, MAX_MIC_DELAY_MS, NO_DEVICE};
 
-use crate::backend::{AudioBlock, AudioContext, AudioInput, AudioShared, Backend, Source};
+use crate::backend::{AudioBlock, AudioContext, AudioInput, AudioShared, Backend, Source, DEVICE_NOT_FOUND};
 use crate::log;
 
 const ASC_AAC_LC_48K_STEREO: [u8; 2] = [0x11, 0x90];
 const RETRY: Duration = Duration::from_secs(2);
+/// How often a chosen device that went away is looked for again, while the default stands in.
+const CHOSEN_RETRY: Duration = Duration::from_secs(30);
 const POLL: Duration = Duration::from_millis(5);
 /// Set by the app to its own process id, whose sounds are left out of game audio. The engine is
 /// one of its children, so on its own it would only know itself.
@@ -49,6 +51,12 @@ struct Channel {
     counted: u64,
     /// The process whose sounds to leave out, while that still works.
     exclude: Option<u32>,
+    /// The chosen device is gone and the default stands in; the chosen one is tried again then.
+    fallback_until: Option<Instant>,
+    /// The last failure logged, so a device that keeps failing the same way is logged once.
+    logged: Option<String>,
+    /// The stand-in has been logged, which needn't be again every `CHOSEN_RETRY`.
+    fallback_logged: bool,
 }
 
 impl Channel {
@@ -63,21 +71,42 @@ impl Channel {
             block: vec![0.0; AAC_FRAME * 2],
             counted: 0,
             exclude: None,
+            fallback_until: None,
+            logged: None,
+            fallback_logged: false,
         }
     }
 
     /// Opens the device, leaving tape out where that's wanted. If that can't be done while the
     /// device itself opens fine, Windows can't do it at all, and it isn't tried again.
     fn open(&mut self, backend: &dyn Backend, ctx: &AudioContext) -> Result<Box<dyn AudioInput>, String> {
-        let Some(pid) = self.exclude else { return backend.open_audio(self.source, &self.device, ctx.clock) };
+        let Some(pid) = self.exclude else { return self.open_chosen(backend, ctx) };
         match backend.open_excluding(pid, ctx.clock) {
             Ok(input) => Ok(input),
             Err(e) => {
-                let input = backend.open_audio(self.source, &self.device, ctx.clock)?;
+                let input = self.open_chosen(backend, ctx)?;
                 log!("audio {:?}: can't leave tape's sounds out ({e}), recording the whole output", self.source);
                 self.exclude = None;
                 Ok(input)
             }
+        }
+    }
+
+    /// The device in the settings. One that's gone (a headset Windows enumerated again under a new
+    /// id, say) is replaced by the default rather than leaving the source silent until someone
+    /// notices, and is looked for again every `CHOSEN_RETRY`.
+    fn open_chosen(&mut self, backend: &dyn Backend, ctx: &AudioContext) -> Result<Box<dyn AudioInput>, String> {
+        self.fallback_until = None;
+        match backend.open_audio(self.source, &self.device, ctx.clock) {
+            Err(e) if e == DEVICE_NOT_FOUND && self.device != FOLLOW_DEFAULT => {
+                let input = backend.open_audio(self.source, FOLLOW_DEFAULT, ctx.clock).map_err(|_| e)?;
+                if !self.fallback_logged {
+                    log!("audio {:?} ({}): not there any more, recording {} instead", self.source, self.device, input.name());
+                }
+                self.fallback_until = Some(Instant::now() + CHOSEN_RETRY);
+                Ok(input)
+            }
+            other => other,
         }
     }
 
@@ -107,6 +136,15 @@ impl Channel {
     }
 
     fn pump(&mut self, backend: &dyn Backend, ctx: &AudioContext) {
+        // The stand-in keeps recording while the chosen device is looked for, so there's no gap
+        // unless it's back.
+        if self.input.is_some() && self.fallback_until.is_some_and(|t| Instant::now() >= t) {
+            self.fallback_until = Some(Instant::now() + CHOSEN_RETRY);
+            if let Ok(input) = backend.open_audio(self.source, &self.device, ctx.clock) {
+                self.fallback_until = None;
+                self.adopt(input, ctx);
+            }
+        }
         if self.input.as_ref().is_some_and(|i| i.is_stale()) {
             self.input = None;
             self.next_open = Instant::now();
@@ -114,13 +152,7 @@ impl Channel {
         if self.input.is_none() && Instant::now() >= self.next_open {
             self.next_open = Instant::now() + RETRY;
             match self.open(backend, ctx) {
-                Ok(input) => {
-                    log!("audio {:?}: opened {}", self.source, input.describe());
-                    let excludes_tape = input.excludes_tape();
-                    let status = AudioSource { name: input.name(), running: true, peak: 0.0, problem: None, excludes_tape };
-                    *self.status(&ctx.shared).lock().unwrap() = Some(status);
-                    self.input = Some(input);
-                }
+                Ok(input) => self.adopt(input, ctx),
                 Err(e) => self.fail(&ctx.shared, e),
             }
         }
@@ -138,8 +170,29 @@ impl Channel {
         self.count_glitches(&ctx.shared, lost);
     }
 
-    fn fail(&self, shared: &AudioShared, problem: String) {
-        log!("audio {:?} ({}): {problem}", self.source, if self.device.is_empty() { "default" } else { &self.device });
+    /// Starts reading from `input`, the chosen device or (`fallback_until` set) the default
+    /// standing in for it.
+    fn adopt(&mut self, input: Box<dyn AudioInput>, ctx: &AudioContext) {
+        let fallback = self.fallback_until.is_some();
+        if !(fallback && self.fallback_logged) {
+            log!("audio {:?}: opened {}", self.source, input.describe());
+        }
+        self.fallback_logged = fallback;
+        self.logged = None;
+        let excludes_tape = input.excludes_tape();
+        let problem = fallback.then(|| "The chosen device isn't connected, so the default one is recorded".to_string());
+        let status = AudioSource { name: input.name(), running: true, peak: 0.0, problem, excludes_tape };
+        *self.status(&ctx.shared).lock().unwrap() = Some(status);
+        self.input = Some(input);
+    }
+
+    fn fail(&mut self, shared: &AudioShared, problem: String) {
+        // Retried every couple of seconds, so only a change is worth a line; the log would
+        // otherwise fill with it and push out everything older.
+        if self.logged.as_ref() != Some(&problem) {
+            log!("audio {:?} ({}): {problem}", self.source, if self.device.is_empty() { "default" } else { &self.device });
+            self.logged = Some(problem.clone());
+        }
         let mut status = self.status(shared).lock().unwrap();
         let s = status.get_or_insert_with(AudioSource::default);
         s.running = false;
@@ -303,6 +356,79 @@ mod tests {
         assert_eq!(names("default", "", true), ["Game audio"]);
         assert_eq!(names("", "x", false), ["Microphone"]);
         assert!(names("", "", false).is_empty());
+    }
+
+    /// A device called "chosen" that can be unplugged, and a default that's always there.
+    struct Devices {
+        chosen_present: std::sync::atomic::AtomicBool,
+    }
+
+    struct Named(String);
+
+    impl AudioInput for Named {
+        fn name(&self) -> String {
+            self.0.clone()
+        }
+        fn read(&mut self, _out: &mut Vec<AudioBlock>) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    impl Backend for Devices {
+        fn probe(&self) -> tape_core::ipc::Probe {
+            Default::default()
+        }
+        fn run_video(&self, _: &Settings, _: &crate::backend::VideoContext) -> Result<(), String> {
+            unimplemented!()
+        }
+        fn open_audio(&self, _: Source, device: &str, _: crate::backend::Clock) -> Result<Box<dyn AudioInput>, String> {
+            if device == FOLLOW_DEFAULT || self.chosen_present.load(Ordering::Relaxed) {
+                Ok(Box::new(Named(device.into())))
+            } else {
+                Err(DEVICE_NOT_FOUND.into())
+            }
+        }
+        fn aac_encoder(&self) -> Result<Box<dyn crate::backend::AacEncoder>, String> {
+            unimplemented!()
+        }
+        fn foreground(&self) -> Option<tape_core::game::Foreground> {
+            None
+        }
+        fn default_folder(&self) -> std::path::PathBuf {
+            Default::default()
+        }
+        fn self_test(&self, _: &Settings) -> String {
+            String::new()
+        }
+    }
+
+    #[test]
+    fn a_chosen_device_that_is_gone_is_stood_in_for_by_the_default_until_it_is_back() {
+        let backend = Devices { chosen_present: false.into() };
+        let ctx = AudioContext {
+            sink: tape_core::sink::Sink::new(true, 60),
+            clock: crate::backend::Clock::new(),
+            stop: Default::default(),
+            shared: Default::default(),
+        };
+        let mut mic = Channel::new(Source::Mic, "chosen");
+        let status = |ctx: &AudioContext| ctx.shared.mic.lock().unwrap().clone().unwrap();
+
+        mic.pump(&backend, &ctx);
+        assert_eq!(mic.input.as_ref().unwrap().name(), FOLLOW_DEFAULT);
+        assert!(status(&ctx).running && status(&ctx).problem.is_some());
+
+        // Still gone: the stand-in carries on.
+        mic.fallback_until = Some(Instant::now());
+        mic.pump(&backend, &ctx);
+        assert_eq!(mic.input.as_ref().unwrap().name(), FOLLOW_DEFAULT);
+
+        backend.chosen_present.store(true, Ordering::Relaxed);
+        mic.fallback_until = Some(Instant::now());
+        mic.pump(&backend, &ctx);
+        assert_eq!(mic.input.as_ref().unwrap().name(), "chosen");
+        assert_eq!(status(&ctx).problem, None);
+        assert!(mic.fallback_until.is_none());
     }
 
     #[test]

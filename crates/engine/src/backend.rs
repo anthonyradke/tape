@@ -9,6 +9,9 @@ use tape_core::ipc::{AudioSource, Probe};
 use tape_core::settings::Settings;
 use tape_core::sink::Sink;
 
+/// `Backend::open_audio`'s error for a chosen device that's no longer there.
+pub const DEVICE_NOT_FOUND: &str = "Device not found";
+
 /// The engine's timeline. It runs from process start and survives pipeline restarts, which is
 /// what lets a recording carry on across one.
 #[derive(Clone, Copy)]

@@ -18,11 +18,11 @@ use windows::Win32::Media::Audio::*;
 use windows::Win32::System::Com::StructuredStorage::{PropVariantClear, PROPVARIANT};
 use windows::Win32::System::Com::{CoCreateInstance, CoTaskMemFree, BLOB, CLSCTX_ALL, STGM_READ};
 use windows::Win32::System::Threading::CreateEventW;
-use windows::Win32::System::Variant::VT_BLOB;
+use windows::Win32::System::Variant::{VT_BLOB, VT_LPWSTR};
 use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 
 use super::com_init;
-use crate::backend::{AudioBlock, AudioInput, Clock, Source};
+use crate::backend::{AudioBlock, AudioInput, Clock, Source, DEVICE_NOT_FOUND};
 use crate::log;
 use crate::mix::SilenceMeter;
 
@@ -58,9 +58,17 @@ fn friendly_name(device: &IMMDevice) -> String {
     unsafe {
         let Ok(store) = device.OpenPropertyStore(STGM_READ) else { return "Audio device".into() };
         let Ok(mut value) = store.GetValue(&PKEY_Device_FriendlyName) else { return "Audio device".into() };
-        let name = value.Anonymous.Anonymous.Anonymous.pwszVal.to_string().unwrap_or_default();
+        // An endpoint without the property answers S_OK with VT_EMPTY and a null pointer, which
+        // to_string would hand to wcslen.
+        let inner = &value.Anonymous.Anonymous;
+        let text = inner.Anonymous.pwszVal;
+        let name = if inner.vt == VT_LPWSTR && !text.is_null() { text.to_string().unwrap_or_default() } else { String::new() };
         let _ = PropVariantClear(&mut value);
-        name
+        if name.is_empty() {
+            "Audio device".into()
+        } else {
+            name
+        }
     }
 }
 
@@ -215,7 +223,7 @@ impl Input {
             default_device(&enumerator, source)?
         } else {
             let wide: Vec<u16> = device.encode_utf16().chain([0]).collect();
-            unsafe { enumerator.GetDevice(windows::core::PCWSTR(wide.as_ptr())) }.map_err(|_| "Device not found".to_string())?
+            unsafe { enumerator.GetDevice(windows::core::PCWSTR(wide.as_ptr())) }.map_err(|_| DEVICE_NOT_FOUND.to_string())?
         };
         let following = (device == FOLLOW_DEFAULT).then(|| device_id(&endpoint)).flatten();
         let name = friendly_name(&endpoint);

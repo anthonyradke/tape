@@ -12,6 +12,12 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 use crate::state;
 use crate::{supervisor, tray};
 
+/// How long a check may take, and the download of an update. Without these a connection that
+/// stalls (the PC sleeping mid-check, say) leaves `checking` or `progress` set until tape restarts,
+/// which refuses every later check and install.
+const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
 /// Let startup, and sign-in when launched with Windows, settle before the first check.
 const FIRST_CHECK: Duration = Duration::from_secs(30);
 const CHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
@@ -107,6 +113,7 @@ static TORN_DOWN: AtomicBool = AtomicBool::new(false);
 fn updater(app: &AppHandle) -> tauri_plugin_updater::Result<tauri_plugin_updater::Updater> {
     let handle = app.clone();
     app.updater_builder()
+        .timeout(CHECK_TIMEOUT)
         .on_before_exit(move || {
             TORN_DOWN.store(true, Ordering::Relaxed);
             supervisor::stop_engine(&handle);
@@ -157,7 +164,8 @@ pub async fn install(app: &AppHandle) -> Result<(), String> {
     if recording(app) {
         return Err("Stop the recording first.".into());
     }
-    let update = app.state::<Shared>().pending.lock().unwrap().clone().ok_or("No update to install.")?;
+    let mut update = app.state::<Shared>().pending.lock().unwrap().clone().ok_or("No update to install.")?;
+    update.timeout = Some(DOWNLOAD_TIMEOUT);
     if !claim(app, Status::start_install) {
         return Ok(());
     }

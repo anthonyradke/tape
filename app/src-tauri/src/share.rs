@@ -367,7 +367,16 @@ fn convert(app: &AppHandle, input: &Path, output: &Path, range: Option<(f64, f64
     let mut child = process.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| format!("Couldn't start the conversion: {e}"))?;
     supervisor::end_with_tape(&child);
     let stdout = child.stdout.take().unwrap();
-    *app.state::<Shares>().child.lock().unwrap() = Some(child);
+    {
+        let shares = app.state::<Shares>();
+        let mut slot = shares.child.lock().unwrap();
+        // A cancel that came before the child was stored had nothing to kill; it's this one.
+        // `cancel_share` sets the flag before it looks here, so one of the two always catches it.
+        if shares.cancel.lock().unwrap().as_ref().is_some_and(|c| c.is_set()) {
+            let _ = child.kill();
+        }
+        *slot = Some(child);
+    }
     let path = input.display().to_string();
     let mut result = Err("The conversion stopped without finishing.".to_string());
     for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -440,7 +449,7 @@ async fn share(app: &AppHandle, path: &str, range: Option<(f64, f64)>, cancel: &
     let known = app.state::<Shares>().usage.lock().unwrap().clone();
     let usage = match known {
         Some(u) => u,
-        None => fetch_usage(app).await?,
+        None => cancel.until(fetch_usage(app)).await.ok_or(CANCELLED)??,
     };
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
     if let Some(link) = usage.clips.iter().find(|l| l.source == key && l.expires > now + 3_600_000) {
@@ -450,6 +459,9 @@ async fn share(app: &AppHandle, path: &str, range: Option<(f64, f64)>, cancel: &
         return Err("Cloud storage is full. Delete a shared link or wait for one to expire.".into());
     }
 
+    if cancel.is_set() {
+        return Err(CANCELLED.into());
+    }
     set_job(app, job(path, "converting", 0.0));
     let dir = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("share");
     let _ = std::fs::create_dir_all(&dir);

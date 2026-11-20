@@ -162,6 +162,9 @@ pub struct Encoder {
     session: *mut c_void,
     bitstream: NV_ENC_OUTPUT_PTR,
     registered: NV_ENC_REGISTERED_PTR,
+    /// The registered texture, held so it outlives its registration: NVENC must let go of it
+    /// before the last reference does, and the converter that owns it can be dropped first.
+    input: Option<ID3D11Texture2D>,
     width: u32,
     height: u32,
     frame: u32,
@@ -178,7 +181,7 @@ impl Encoder {
         let session = open_session(&library, &gfx.device)?;
         // Plain C structs, for which all zeros is a valid value; `initialize` fills them in.
         let (config, init) = unsafe { (Box::new(zeroed()), zeroed()) };
-        Ok(Encoder { library, session, bitstream: null_mut(), registered: null_mut(), width: 0, height: 0, frame: 0, config, init })
+        Ok(Encoder { library, session, bitstream: null_mut(), registered: null_mut(), input: None, width: 0, height: 0, frame: 0, config, init })
     }
 
     /// The largest frame this session takes for `codec`.
@@ -338,6 +341,7 @@ impl Encoder {
             register.bufferUsage = NV_ENC_INPUT_IMAGE;
             check(api.nvEncRegisterResource.unwrap()(self.session, &mut register), "register input")?;
             self.registered = register.registeredResource;
+            self.input = Some(input.clone());
         }
         Ok(())
     }

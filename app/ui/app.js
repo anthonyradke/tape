@@ -453,7 +453,15 @@ async function listenForKey(button, name) {
     listening = null;
     await invoke("resume_hotkeys");
     if (value === undefined) await refresh();
-    else await save((s) => (s.hotkeys[name] = value));
+    else
+      await save((s) => {
+        // A key does one thing: taking it for this action takes it off any other, which would
+        // otherwise lose it at registration and show up as held by another app.
+        for (const other of Object.keys(s.hotkeys)) {
+          if (other !== name && value && (s.hotkeys[other] || "").toLowerCase() === value.toLowerCase()) s.hotkeys[other] = "";
+        }
+        s.hotkeys[name] = value;
+      });
   };
   const onKey = (e) => {
     e.preventDefault();

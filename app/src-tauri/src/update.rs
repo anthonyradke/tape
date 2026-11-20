@@ -55,13 +55,47 @@ pub fn status(app: &AppHandle) -> Status {
 }
 
 fn set(app: &AppHandle, f: impl FnOnce(&mut Status)) {
+    claim(app, |s| {
+        f(s);
+        true
+    });
+}
+
+/// Runs `f` under the status lock and tells the window when it returns true. Testing and setting a
+/// flag in one step is what keeps two clicks (Settings and the tray, or a double click) from both
+/// starting a download.
+fn claim(app: &AppHandle, f: impl FnOnce(&mut Status) -> bool) -> bool {
     let status = {
         let shared = app.state::<Shared>();
         let mut s = shared.status.lock().unwrap();
-        f(&mut s);
+        if !f(&mut s) {
+            return false;
+        }
         s.clone()
     };
     let _ = app.emit("update", status);
+    true
+}
+
+impl Status {
+    /// Marks a check as running, unless one is already running or an update is installing.
+    fn start_check(&mut self) -> bool {
+        if self.checking || self.progress.is_some() {
+            return false;
+        }
+        self.checking = true;
+        true
+    }
+
+    /// Marks an install as running, unless one already is.
+    fn start_install(&mut self) -> bool {
+        if self.progress.is_some() {
+            return false;
+        }
+        self.progress = Some(0);
+        self.error = None;
+        true
+    }
 }
 
 /// Set once `on_before_exit` has taken the engine and the tray down. If the installer then fails to
@@ -88,15 +122,9 @@ fn recording(app: &AppHandle) -> bool {
 }
 
 pub async fn check(app: &AppHandle) {
-    let busy = {
-        let s = app.state::<Shared>();
-        let s = s.status.lock().unwrap();
-        s.checking || s.progress.is_some()
-    };
-    if busy {
+    if !claim(app, Status::start_check) {
         return;
     }
-    set(app, |s| s.checking = true);
     let result = match updater(app) {
         Ok(updater) => updater.check().await,
         Err(e) => Err(e),
@@ -130,13 +158,9 @@ pub async fn install(app: &AppHandle) -> Result<(), String> {
         return Err("Stop the recording first.".into());
     }
     let update = app.state::<Shared>().pending.lock().unwrap().clone().ok_or("No update to install.")?;
-    if status(app).progress.is_some() {
+    if !claim(app, Status::start_install) {
         return Ok(());
     }
-    set(app, |s| {
-        s.progress = Some(0);
-        s.error = None;
-    });
     let mut done = 0u64;
     let downloaded = update
         .download(
@@ -188,4 +212,57 @@ pub async fn check_update(app: AppHandle) -> Status {
 #[tauri::command]
 pub async fn install_update(app: AppHandle) -> Result<(), String> {
     install(&app).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn only_one_install_starts() {
+        let mut s = Status::default();
+        assert!(s.start_install());
+        assert_eq!(s.progress, Some(0));
+        assert!(!s.start_install());
+        s.progress = None;
+        assert!(s.start_install());
+    }
+
+    #[test]
+    fn install_clears_the_last_error() {
+        let mut s = Status { error: Some("offline".into()), ..Status::default() };
+        assert!(s.start_install());
+        assert_eq!(s.error, None);
+    }
+
+    #[test]
+    fn no_check_while_checking_or_installing() {
+        let mut s = Status::default();
+        assert!(s.start_check());
+        assert!(!s.start_check());
+        let mut s = Status { progress: Some(40), ..Status::default() };
+        assert!(!s.start_check());
+        assert!(!s.checking);
+    }
+
+    #[test]
+    fn simultaneous_clicks_start_one_download() {
+        // The same lock and test-and-set `claim` uses, hit from many threads at once.
+        let status = Arc::new(Mutex::new(Status::default()));
+        let gate = Arc::new(Barrier::new(16));
+        let started: usize = (0..16)
+            .map(|_| {
+                let (status, gate) = (status.clone(), gate.clone());
+                std::thread::spawn(move || {
+                    gate.wait();
+                    status.lock().unwrap().start_install()
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|t| t.join().unwrap() as usize)
+            .sum();
+        assert_eq!(started, 1);
+    }
 }

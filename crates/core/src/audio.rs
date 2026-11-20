@@ -363,7 +363,11 @@ impl Mixdown {
 
     /// Everything that will ever come out has.
     pub fn done(&self) -> bool {
-        self.next.is_some_and(|n| n >= self.until) || self.lanes.iter().all(|l| l.ended && l.buf.is_empty())
+        // An ended track whose sound all lies before where the mix is (or starts) has nothing left
+        // to give, though it's still buffered: `pull` never gets to it to drop it.
+        let at = self.next.or(self.from);
+        let drained = |l: &Lane| l.ended && (l.buf.is_empty() || at.zip(l.end_frame()).is_some_and(|(at, end)| end <= at));
+        self.next.is_some_and(|n| n >= self.until) || self.lanes.iter().all(drained)
     }
 
     /// Mixes what every track has reached into `out` (replacing it) and returns the frame it
@@ -675,6 +679,16 @@ mod tests {
         two.push(1, 0, &[0.7; 4]);
         let mixed = &pull_all(&mut two)[0].1;
         assert!(mixed.iter().all(|&s| s > 0.8 && s < 1.0), "{mixed:?}");
+    }
+
+    #[test]
+    fn mixdown_is_done_when_the_range_starts_after_a_track_ended() {
+        // A shared part from the tail of a clip whose sound stopped early.
+        let mut m = Mixdown::new(1, Some(100), None);
+        m.push(0, 0, &[0.1; 20]);
+        m.end(0);
+        assert!(pull_all(&mut m).is_empty());
+        assert!(m.done());
     }
 
     #[test]

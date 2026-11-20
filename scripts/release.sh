@@ -32,8 +32,12 @@ cargo test -q -p tape-core -p tape-engine -p nvenc || fail "tests failed, nothin
 # a tag exists: a commit that already failed on GitHub, or code that doesn't compile for Windows.
 [ "$(gh run list --workflow ci.yml --commit "$(git rev-parse HEAD)" --json conclusion -q '.[0].conclusion' 2>/dev/null)" != failure ] ||
   fail "CI failed on this commit on GitHub; fix it first"
-XWIN_ACCEPT_LICENSE=1 cargo xwin check -q --target x86_64-pc-windows-msvc --workspace --all-targets ||
-  fail "tape doesn't build for Windows, nothing was changed"
+# On Windows that's a plain check; elsewhere cargo-xwin cross-checks with Microsoft's libraries.
+case "$(uname -s)" in
+MINGW* | MSYS* | CYGWIN*) windows_check() { cargo check -q --target x86_64-pc-windows-msvc --workspace --all-targets; } ;;
+*) windows_check() { XWIN_ACCEPT_LICENSE=1 cargo xwin check -q --target x86_64-pc-windows-msvc --workspace --all-targets; } ;;
+esac
+windows_check || fail "tape doesn't build for Windows, nothing was changed"
 
 # perl rather than sed -i, whose options differ between GNU and macOS. No /g: only the package's own
 # version, the first one in each file.

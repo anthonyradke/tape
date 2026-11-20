@@ -139,11 +139,16 @@ pub fn split_name(name: &str) -> (&str, &str) {
 
 /// Where a trimmed copy of `path` goes: beside it, "<name> trim.DVR.mp4", then "trim 2" and up.
 pub fn trimmed_path(path: &Path) -> PathBuf {
+    trimmed_path_where(path, |p| !p.exists())
+}
+
+/// `trimmed_path`, taking the first name `free` accepts.
+pub fn trimmed_path_where(path: &Path, free: impl Fn(&Path) -> bool) -> PathBuf {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let (stem, ending) = split_name(&name);
     (1..)
         .map(|n| path.with_file_name(if n == 1 { format!("{stem} trim{ending}") } else { format!("{stem} trim {n}{ending}") }))
-        .find(|p| !p.exists())
+        .find(|p| free(p))
         .unwrap()
 }
 
@@ -220,6 +225,8 @@ mod tests {
         std::fs::write(dir.join("CS2 2026.11.01 - 20.00.00.00 trim.DVR.mp4"), b"x").unwrap();
         assert_eq!(trimmed_path(&clip), dir.join("CS2 2026.11.01 - 20.00.00.00 trim 2.DVR.mp4"));
         assert_eq!(trimmed_path(&dir.join("r.mp4")), dir.join("r trim.mp4"));
+        let taken = dir.join("r trim.mp4");
+        assert_eq!(trimmed_path_where(&dir.join("r.mp4"), |p| p != taken), dir.join("r trim 2.mp4"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

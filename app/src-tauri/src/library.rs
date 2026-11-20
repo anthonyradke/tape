@@ -70,7 +70,8 @@ pub fn clip_info(app: AppHandle, path: String) -> Result<Info, String> {
 #[tauri::command]
 pub async fn trim_clip(app: AppHandle, path: String, start: f64, end: f64) -> Result<String, String> {
     let path = check(&app, &path)?;
-    let to = naming::trimmed_path(&path);
+    let reserved = Reserved::new(&path);
+    let to = reserved.0.clone();
     let made = to.clone();
     let result = tauri::async_runtime::spawn_blocking(move || trim::trim(&path, &made, start, end))
         .await
@@ -81,6 +82,28 @@ pub async fn trim_clip(app: AppHandle, path: String, start: f64, end: f64) -> Re
             Ok(to.display().to_string())
         }
         Err(e) => Err(format!("Couldn't trim: {e}.")),
+    }
+}
+
+/// Trim targets in use. Two trims of one clip at once (a double click, or the window and the
+/// overlay) would otherwise pick the same new name and write the same temporary file.
+static TRIMMING: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// A trim target nobody else is writing, held until dropped.
+struct Reserved(PathBuf);
+
+impl Reserved {
+    fn new(source: &Path) -> Reserved {
+        let mut busy = TRIMMING.lock().unwrap();
+        let to = naming::trimmed_path_where(source, |p| !p.exists() && !busy.iter().any(|b| b == p));
+        busy.push(to.clone());
+        Reserved(to)
+    }
+}
+
+impl Drop for Reserved {
+    fn drop(&mut self) {
+        TRIMMING.lock().unwrap().retain(|p| *p != self.0);
     }
 }
 
